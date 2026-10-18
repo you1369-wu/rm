@@ -1,7 +1,9 @@
 //负责can的收发和电机控制
 //负责云台的折叠
+//只在ready状态下判断distance，是否需要折叠
 #include "control_task.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "can.h"
@@ -22,12 +24,16 @@ GimbalData motor_b_data;
 
 uint16_t min_distance_cm = 30U;             // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
-// 未标定时首次进入控制会用当前角度占位，避免上电后向 0 rad 突然转动。
+
+// 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
+// 三项必须先实测并填写；NAN 会禁止自动控制，不能从一个端点推算其他位置。
+float yuntai_other_limit_offset_rad = NAN;
+float yuntai_unfolded_offset_rad = NAN;
+float yuntai_folded_offset_rad = NAN;
+
+// 每次上电在遥控器下档采集一次参考角后，由偏移量计算本次运行的绝对角度。
 float yuntai_unfolded_angle_rad = NAN;
 float yuntai_folded_angle_rad = NAN;
-// 4.4.7-3: A 电机机械安全行程，须按同一多圈角度坐标标定后填写。
-// 若机构行程跨越电机一圈，上电后还需重新找零，多圈计数不会跨掉电保留。
-// 两端均未标定时先锁定为首次反馈角度，只允许保持当前位置。
 float yuntai_min_angle_rad = NAN;         // 云台折叠机构最小角度，单位 rad。
 float yuntai_max_angle_rad = NAN;         // 云台折叠机构最大角度，单位 rad。
 uint32_t fold_motion_timeout_ms = 5000U;  //折叠或复位超时保护（超过5s没到位则异常退出）
@@ -51,6 +57,9 @@ enum class FoldFault
 };  //折叠故障类型
 
 bool fold_control_initialized = false;
+bool fold_home_calibrated = false;
+bool fold_home_settling = false;
+uint32_t fold_home_settle_start_ms = 0U;
 bool fold_trigger_armed = true;
 FoldStage fold_stage = FoldStage::UNFOLDING;
 FoldFault fold_fault = FoldFault::NONE;
@@ -62,6 +71,7 @@ float motor_b_hold_angle_rad = 0.0f;
 constexpr float kFoldAngleToleranceRad = 0.05f;      //到位角度容差
 constexpr float kFoldSpeedToleranceRadS = 0.1f;      //到位速度容差
 constexpr uint32_t kFoldSettleMs = 100U;             //到位时间
+constexpr uint32_t kFoldHomeSettleMs = 100U;         // 下档且静止后才采集开机参考角。
 constexpr float kLimitFeedbackToleranceRad = 0.02f;  // 限位反馈容差，避免编码器微小抖动误报。
 
 //                           dt     kp    ki    kd    mo   mio   alpha  ang? dynamic?
@@ -73,7 +83,7 @@ sp::PID motor_b_pid_speed(0.001f, 0.035f, 0.0f, 0.0f, 0.3f, 0.2f, 1.0f, false, t
 
 void run_disable_mode()
 {
-  // 4.4.7-4: 下档、失联、折叠超时或限位故障均发送两台电机的零力矩。
+  //下档、失联、折叠超时或限位故障均发送两台电机的零力矩。
   motor_a_data.given_torque = 0.0f;
   motor_b_data.given_torque = 0.0f;
   motor_a_data.target_speed_set = 0.0f;
@@ -88,6 +98,35 @@ void run_disable_mode()
   motor_b.write(can1.tx_data);
   // 软件零力矩依赖 CAN 正常发送，不能替代硬件急停；当前 send() 不反馈发送结果。
   can1.send(motor_a.tx_id);
+}
+
+//开机下档标定云台折叠机构的限位角度和目标角度
+bool calibrate_yuntai_from_max_angle()
+{
+  const float home_angle = motor_a.angle;
+  const float other_limit = home_angle + yuntai_other_limit_offset_rad;
+  const float unfolded = home_angle + yuntai_unfolded_offset_rad;
+  const float folded = home_angle + yuntai_folded_offset_rad;
+  const float lower_limit = std::min(home_angle, other_limit);
+  const float upper_limit = std::max(home_angle, other_limit);
+
+  // 三个偏移必须同一次标定取得；行程小于一圈，且两个目标都在安全行程内。
+  if (
+    !std::isfinite(home_angle) || !std::isfinite(yuntai_other_limit_offset_rad) ||
+    !std::isfinite(yuntai_unfolded_offset_rad) || !std::isfinite(yuntai_folded_offset_rad) ||
+    !std::isfinite(other_limit) || !std::isfinite(unfolded) || !std::isfinite(folded) ||
+    std::fabs(yuntai_other_limit_offset_rad) <= kFoldAngleToleranceRad ||
+    std::fabs(yuntai_other_limit_offset_rad) >= 2.0f * sp::SP_PI || unfolded < lower_limit ||
+    unfolded > upper_limit || folded < lower_limit || folded > upper_limit) {
+    return false;
+  }
+
+  // 机械最大端不一定是编码器数值的上端，按实际反馈方向确定数值上下限。
+  yuntai_min_angle_rad = lower_limit;
+  yuntai_max_angle_rad = upper_limit;
+  yuntai_unfolded_angle_rad = unfolded;
+  yuntai_folded_angle_rad = folded;
+  return true;
 }
 
 void run_motor_angle_control(float target_angle_a, float target_angle_b)
@@ -134,14 +173,7 @@ void latch_fold_fault(FoldFault reason)
 //云台折叠
 void run_yuntai_fold(uint16_t distance_cm, uint32_t now_ms)
 {
-  //若尚未人工标定折叠角，展开角，最大限位角和最小限位角，先初始化为当前角度
   if (!fold_control_initialized) {
-    if (!std::isfinite(yuntai_unfolded_angle_rad)) yuntai_unfolded_angle_rad = motor_a.angle;
-    if (!std::isfinite(yuntai_folded_angle_rad)) yuntai_folded_angle_rad = motor_a.angle;
-    if (!std::isfinite(yuntai_min_angle_rad) && !std::isfinite(yuntai_max_angle_rad)) {
-      yuntai_min_angle_rad = motor_a.angle;
-      yuntai_max_angle_rad = motor_a.angle;
-    }
     motor_b_hold_angle_rad = motor_b.angle;  //b保持原来的角度不变
     fold_stage = FoldStage::UNFOLDING;
     fold_stage_start_ms = now_ms;
@@ -250,13 +282,29 @@ extern "C" void control_task(void const * argument)
     const uint32_t now_ms = osKernelSysTick();
     const bool motors_ready = motor_a.is_alive(now_ms) && motor_b.is_alive(now_ms);
 
-    // 4.4.7-4: 下档零力矩优先；故障锁存后必须经过下档才能重新允许运动。
+    // 下档零力矩优先；故障锁存后必须经过下档才能重新允许运动。
     if (remote_ready && remote_data.is_alive && remote_data.sw_r == REMOTE_SWITCH_DOWN) {
       fold_fault = FoldFault::NONE;
       fold_control_initialized = false;
       run_disable_mode();
+
+      // 只在本次上电的首次下档、反馈有效且电机静止时采集机械最大限位角度。
+      if (
+        !fold_home_calibrated && motors_ready && std::isfinite(motor_a.angle) &&
+        std::isfinite(motor_a.speed) && std::fabs(motor_a.speed) <= kFoldSpeedToleranceRadS) {
+        if (!fold_home_settling) {
+          fold_home_settle_start_ms = now_ms;
+          fold_home_settling = true;
+        }
+        if (now_ms - fold_home_settle_start_ms >= kFoldHomeSettleMs)
+          fold_home_calibrated = calibrate_yuntai_from_max_angle();
+      }
+      else {
+        fold_home_settling = false;
+      }
     }
     else if (!remote_ready || !remote_data.is_alive) {
+      fold_home_settling = false;
       if (fold_control_initialized && fold_fault == FoldFault::NONE)
         fold_fault = FoldFault::REMOTE_LOST;
       fold_control_initialized = false;
@@ -265,13 +313,20 @@ extern "C" void control_task(void const * argument)
     else if (
       !motors_ready || !std::isfinite(motor_a.angle) || !std::isfinite(motor_a.speed) ||
       !std::isfinite(motor_b.angle) || !std::isfinite(motor_b.speed)) {
+      fold_home_settling = false;
       if (fold_control_initialized && fold_fault == FoldFault::NONE)
         fold_fault = FoldFault::FEEDBACK_LOST;
       fold_control_initialized = false;
       run_disable_mode();
     }
     else if (remote_data.sw_r != REMOTE_SWITCH_MID && remote_data.sw_r != REMOTE_SWITCH_UP) {
+      fold_home_settling = false;
       fold_control_initialized = false;
+      run_disable_mode();
+    }
+    else if (!fold_home_calibrated) {
+      // 未采集参考角、偏移量未填或配置无效时，禁止进入角度 PID。
+      fold_home_settling = false;
       run_disable_mode();
     }
     else if (fold_fault != FoldFault::NONE) {
