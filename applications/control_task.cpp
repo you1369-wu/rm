@@ -11,6 +11,7 @@
 #include "io/can/can.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
 #include "remote_task.h"
+#include "tools/gravity_compensation.hpp"
 #include "tools/math_tools/math_tools.hpp"
 #include "tools/pid/pid.hpp"
 
@@ -21,6 +22,11 @@ extern volatile uint16_t distance;
 
 GimbalData motor_a_data;
 GimbalData motor_b_data;
+
+// 最大限位与水平姿态相同，下档标定成功后同时保存重力补偿参考角。
+float motor_a_gravity_horizontal_angle_rad = NAN;
+float motor_a_gravity_compensation_torque_nm = 0.0f;
+constexpr float kMotorAMaxGivenTorqueNm = 0.45f;
 
 uint16_t min_distance_cm = 30U;             // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
@@ -74,16 +80,19 @@ constexpr uint32_t kFoldSettleMs = 100U;             //到位时间
 constexpr uint32_t kFoldHomeSettleMs = 100U;         // 下档且静止后才采集开机参考角。
 constexpr float kLimitFeedbackToleranceRad = 0.02f;  // 限位反馈容差，避免编码器微小抖动误报。
 
-//                           dt     kp    ki    kd    mo   mio   alpha  ang? dynamic?
-// A 电机使用多圈角度，不取跨越机械限位的最短旋转路径。
-sp::PID motor_a_pid_angle(0.001f, 5.0f, 2.5f, 0.0f, 5.0f, 2.5f, 1.0f, false, true);
-sp::PID motor_a_pid_speed(0.001f, 0.035f, 0.0f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
-sp::PID motor_b_pid_angle(0.001f, 5.0f, 2.5f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
-sp::PID motor_b_pid_speed(0.001f, 0.035f, 0.0f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
+// 参数顺序: dt, kp, ki, kd, mo, mio, alpha, angular, dynamic。
+// A 参数来自 feature/motor_b_pid；保留多圈误差，避免跨越机械限位取最短路径。
+sp::PID motor_a_pid_angle(0.001f, 5.0f, 2.0f, 0.0f, 5.0f, 2.5f, 1.0f, false, true);
+sp::PID motor_a_pid_speed(
+  0.001f, 0.35f, 0.04f, 0.0f, kMotorAMaxGivenTorqueNm, 0.2f, 1.0f, false, true);
+// B 参数来自 feature/pid_motor_a；该分支没有重力补偿，仍只使用 PID 保持角度。
+sp::PID motor_b_pid_angle(0.001f, 5.0f, 2.51f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
+sp::PID motor_b_pid_speed(0.001f, 0.1f, 0.08f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
 
 void run_disable_mode()
 {
   //下档、失联、折叠超时或限位故障均发送两台电机的零力矩。
+  motor_a_gravity_compensation_torque_nm = 0.0f;
   motor_a_data.given_torque = 0.0f;
   motor_b_data.given_torque = 0.0f;
   motor_a_data.target_speed_set = 0.0f;
@@ -126,6 +135,7 @@ bool calibrate_yuntai_from_max_angle()
   yuntai_max_angle_rad = upper_limit;
   yuntai_unfolded_angle_rad = unfolded;
   yuntai_folded_angle_rad = folded;
+  motor_a_gravity_horizontal_angle_rad = home_angle;
   return true;
 }
 
@@ -136,7 +146,20 @@ void run_motor_angle_control(float target_angle_a, float target_angle_b)
   motor_a_pid_angle.calc(target_angle_a, motor_a.angle);
   motor_a_data.target_speed_set = motor_a_pid_angle.out;
   motor_a_pid_speed.calc(motor_a_data.target_speed_set, motor_a.speed);
-  motor_a_data.given_torque = motor_a_pid_speed.out;
+
+  // A 实际角度相对开机水平参考角的变化量，用于计算抬起方向的重力补偿。
+  const float delta_angle_rad = motor_a.angle - motor_a_gravity_horizontal_angle_rad;
+  motor_a_gravity_compensation_torque_nm = yuntai::calculate_gravity_compensation(delta_angle_rad);
+  const float total_torque_nm = motor_a_pid_speed.out + motor_a_gravity_compensation_torque_nm;
+
+  // 参考角或补偿计算异常时，两台电机均发送零力矩，不把无效值交给 cmd()。
+  if (!std::isfinite(total_torque_nm)) {
+    run_disable_mode();
+    return;
+  }
+
+  // 总力矩先限幅，再接受原有机械限位检查；补偿不能绕过限位或失能。
+  motor_a_data.given_torque = sp::limit_max(total_torque_nm, kMotorAMaxGivenTorqueNm);
 
   //最大折叠角度限位
   if (

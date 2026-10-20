@@ -133,11 +133,11 @@ void MX_FREERTOS_Init(void) {
   remoteTaskHandle = osThreadCreate(osThread(remoteTask), NULL);
 
   /* definition and creation of ledtask */
-  osThreadDef(ledtask, led_task, osPriorityLow, 0, 512);
+  osThreadDef(ledtask, led_task, osPriorityLow, 0, 128);
   ledtaskHandle = osThreadCreate(osThread(ledtask), NULL);
 
   /* definition and creation of buzzerTask */
-  osThreadDef(buzzerTask, buzzer_task, osPriorityIdle, 0, 512);
+  osThreadDef(buzzerTask, buzzer_task, osPriorityIdle, 0, 128);
   buzzerTaskHandle = osThreadCreate(osThread(buzzerTask), NULL);
 
   /* definition and creation of controlTask */
@@ -145,7 +145,7 @@ void MX_FREERTOS_Init(void) {
   controlTaskHandle = osThreadCreate(osThread(controlTask), NULL);
 
   /* definition and creation of laserTask */
-  osThreadDef(laserTask, laser_task, osPriorityLow, 0, 512);
+  osThreadDef(laserTask, laser_task, osPriorityLow, 0, 256);
   laserTaskHandle = osThreadCreate(osThread(laserTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
