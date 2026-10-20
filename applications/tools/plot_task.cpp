@@ -1,28 +1,28 @@
 #include "cmsis_os.h"
-#include "control_task.hpp"
 #include "io/plotter/plotter.hpp"
-#include "motor/rm_motor/rm_motor.hpp"
-#include "tools/math_tools/math_tools.hpp"
-
-extern sp::RM_Motor motor_a;
-extern GimbalData motor_a_data;
+#include "tracking_mode.hpp"
+#include "FreeRTOS.h"
+#include "task.h"
 
 sp::Plotter plotter(&huart1, false);
 
-// clang-format off
 extern "C" void plot_task(void const * argument)
 {
-	(void)argument;
-
-	while (1) {
-		// A电机角度环调试: 目标角度、实际角度、目标速度、给定力矩
-		plotter.plot(
-			motor_a_data.target_angle_set,
-			sp::limit_angle(motor_a.angle),
-			motor_a_data.target_speed_set,
-			motor_a_data.given_torque);
-
-		osDelay(5);
-	}
+  (void)argument;
+  TickType_t wake_tick = xTaskGetTickCount();
+  for (;;) {
+    const auto t = tracking::read_telemetry();
+    plotter.plot(
+      t.target_yaw, t.actual_yaw, t.target_pitch, t.actual_pitch,
+      t.error_yaw, t.error_pitch,
+      t.speed_command_yaw, t.actual_speed_yaw,
+      t.speed_command_pitch, t.actual_speed_pitch,
+      t.torque_yaw, t.torque_pitch, t.rms_yaw, t.rms_pitch,
+      static_cast<float>(t.state), static_cast<float>(t.fault),
+      static_cast<float>(t.phase_ms), static_cast<float>(t.saturation_mask));
+    // 75字节*100Hz=7500B/s < 115200/10=11520B/s。
+    if (xTaskGetTickCount() - wake_tick >= pdMS_TO_TICKS(tracking_config::kPlotPeriodMs))
+      wake_tick = xTaskGetTickCount();
+    vTaskDelayUntil(&wake_tick, pdMS_TO_TICKS(tracking_config::kPlotPeriodMs));
+  }
 }
-// clang-format on

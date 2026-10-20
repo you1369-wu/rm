@@ -48,6 +48,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+/* 新增静态任务，不挤占现有RTOS heap；栈单位为32位word。 */
+static StaticTask_t trajectory_tcb, plot_tcb;
+static StackType_t trajectory_stack[256], plot_stack[512];
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId imutaskHandle;
@@ -59,6 +62,10 @@ osThreadId controlTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+extern void trajectory_task(void const * argument);
+extern void plot_task(void const * argument);
+static void trajectory_entry(void * argument) { trajectory_task(argument); }
+static void plot_entry(void * argument) { plot_task(argument); }
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void const * argument);
@@ -143,7 +150,13 @@ void MX_FREERTOS_Init(void) {
   controlTaskHandle = osThreadCreate(osThread(controlTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* 原生优先级：轨迹4、绘图1、现有control为6。 */
+  TaskHandle_t trajectory_handle = xTaskCreateStatic(
+    trajectory_entry, "trajectory", 256, NULL, 4, trajectory_stack, &trajectory_tcb);
+  TaskHandle_t plot_handle = xTaskCreateStatic(
+    plot_entry, "tracking_plot", 512, NULL, 1, plot_stack, &plot_tcb);
+  configASSERT(trajectory_handle != NULL);
+  configASSERT(plot_handle != NULL);
   /* USER CODE END RTOS_THREADS */
 
 }

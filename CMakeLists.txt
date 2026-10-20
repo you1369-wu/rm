@@ -52,6 +52,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/remote_task.cpp
     applications/can_task.cpp
     applications/control_task.cpp
+    applications/trajectory_task.cpp
+    applications/tracking_controller.cpp
+    applications/tracking_mode.cpp
     applications/tools/plot_task.cpp
     applications/pid_train.cpp
     applications/led_task.cpp

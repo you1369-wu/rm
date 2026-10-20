@@ -12,6 +12,9 @@
 #include "remote_task.h"
 #include "tools/math_tools/math_tools.hpp"
 #include "tools/pid/pid.hpp"
+#include "tracking_mode.hpp"
+#include "FreeRTOS.h"
+#include "task.h"
 
 extern sp::CAN can1;
 extern sp::RM_Motor motor_a;
@@ -222,19 +225,56 @@ extern "C" void control_task(void const * argument)
   motor_a_data.target_angle_set = motor_a.angle;
   motor_b_data.target_angle_set = motor_b.angle;
 
+  TickType_t wake_tick = xTaskGetTickCount();
+  uint32_t previous_ms = wake_tick - tracking_config::kControlPeriodMs;
+  bool was_trajectory = false;
   while (true) {
     RemoteTaskData remote_data = {};
+    // USART3/CAN1中断优先级为5，可被FreeRTOS临界区屏蔽。
+    taskENTER_CRITICAL();
     const bool remote_ready = remote_task_get_data(&remote_data);
+    const uint32_t now_ms = xTaskGetTickCount();
+    const tracking::Feedback feedback{
+      motor_a.angle, motor_a.speed, motor_b.angle, motor_b.speed,
+      motor_a.is_alive(now_ms) && motor_b.is_alive(now_ms)};
+    taskEXIT_CRITICAL();
     ImuTaskData imu_data = {};
     const bool imu_ready = imu_task_get_data(&imu_data);
     const float imu_yaw = imu_ready ? imu_yaw_unwrapper.update(imu_data.euler.yaw_rad) : 0.0f;
-    const uint32_t now_ms = osKernelSysTick();
-    const bool motors_ready = motor_a.is_alive(now_ms) && motor_b.is_alive(now_ms);
+    const bool motors_ready = feedback.alive;
+    const bool remote_ok = remote_ready && remote_data.is_alive;
+    const bool trajectory_selected = remote_ok && remote_data.sw_r == REMOTE_SWITCH_UP &&
+                                     remote_data.sw_l == REMOTE_SWITCH_UP;
+    const uint32_t gap_ms = now_ms - previous_ms;
+    previous_ms = now_ms;
+    const auto command = tracking::update(
+      trajectory_selected, remote_ok && remote_data.sw_r == REMOTE_SWITCH_DOWN,
+      remote_ok, feedback, now_ms, gap_ms);
+    const bool tracking_fault = tracking::read_telemetry().state == tracking::State::Fault;
+    if (trajectory_selected != was_trajectory) {
+      motor_a_pid_angle.clear();
+      motor_a_pid_speed.clear();
+      motor_b_pid_angle.clear();
+      motor_b_pid_speed.clear();
+    }
+    was_trajectory = trajectory_selected;
 
     // 右拨杆下档、遥控器未连接或遥控器失联时, 进入失能模式
-    if ((!remote_ready) || (!remote_data.is_alive) || (remote_data.sw_r == REMOTE_SWITCH_DOWN)) {
+    if ((!remote_ready) || (!remote_data.is_alive) ||
+        (remote_data.sw_r == REMOTE_SWITCH_DOWN) || tracking_fault) {
       reset_link_mode_reference();
       run_disable_mode();
+    }
+    else if (trajectory_selected) {
+      reset_link_mode_reference();
+      // 唯一CAN命令发送者仍是control_task；故障时command已归零。
+      motor_a_data.given_torque = command.torque_a;
+      motor_b_data.given_torque = command.torque_b;
+      motor_a.cmd(command.torque_a);
+      motor_b.cmd(command.torque_b);
+      motor_a.write(can1.tx_data);
+      motor_b.write(can1.tx_data);
+      can1.send(motor_a.tx_id);
     }
     else if (remote_data.sw_r == REMOTE_SWITCH_MID) {
       if (imu_ready && motors_ready) {
@@ -261,7 +301,10 @@ extern "C" void control_task(void const * argument)
       run_disable_mode();
     }
 
-    osDelay(1);
+    // 超期时重新定基准，避免连续补跑过期控制周期。
+    if (xTaskGetTickCount() - wake_tick >= pdMS_TO_TICKS(tracking_config::kControlPeriodMs))
+      wake_tick = xTaskGetTickCount();
+    vTaskDelayUntil(&wake_tick, pdMS_TO_TICKS(tracking_config::kControlPeriodMs));
   }
 }
 

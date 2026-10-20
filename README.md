@@ -1,5 +1,13 @@
 # rm_imu
 
+## Trajectory tracking branch
+
+This branch adds dual-axis trajectory tracking (motor A = yaw, motor B = pitch).
+See [接入、遥控操作、控制器整定与绘图通道说明](docs/trajectory_tracking.md).
+Use right switch DOWN to arm/reset, then both switches UP to start.
+Confirm encoder zero, direction and mechanical travel in
+`applications/tracking_config.hpp` before hardware operation.
+
 RoboMaster C board firmware project for IMU, remote control, CAN motor control,
 PID training, LED, buzzer, and serial plotting tasks.
 
