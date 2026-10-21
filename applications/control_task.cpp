@@ -86,8 +86,8 @@ sp::PID motor_a_pid_angle(0.001f, 5.0f, 2.0f, 0.0f, 5.0f, 2.5f, 1.0f, false, tru
 sp::PID motor_a_pid_speed(
   0.001f, 0.3f, 0.04f, 0.0f, kMotorAMaxGivenTorqueNm, 0.2f, 1.0f, false, true);
 // B 参数来自 feature/pid_motor_a；该分支没有重力补偿，仍只使用 PID 保持角度。
-sp::PID motor_b_pid_angle(0.001f, 5.0f, 2.51f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
-sp::PID motor_b_pid_speed(0.001f, 0.1f, 0.08f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
+sp::PID motor_b_pid_angle(0.001f, 4.5f, 1.0f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
+sp::PID motor_b_pid_speed(0.001f, 0.2f, 0.08f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
 
 void run_disable_mode()
 {
