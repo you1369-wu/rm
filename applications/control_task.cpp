@@ -33,9 +33,9 @@ uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值
 
 // 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
 // 实测机械最小端 = 最大端 + 1.5；两目标各向行程内退 0.2，任一偏移为 NAN 则禁止控制。
-float yuntai_other_limit_offset_rad = 1.5f;  // 机械最小限位端相对开机最大端。
-float yuntai_unfolded_offset_rad = 1.3f;     // 展开 = 机械最小端 - 0.2 = 最大端 + 1.3。
-float yuntai_folded_offset_rad = 0.2f;       // 折叠 = 机械最大端 + 0.2。
+float yuntai_other_limit_offset_rad = 1.9f;  // 机械最小限位端相对开机最大端。
+float yuntai_unfolded_offset_rad = 1.8f;     // 展开 = 机械最小端 - 0.1 = 最大端 + 1.8。
+float yuntai_folded_offset_rad = 0.0f;       // 折叠 = 机械最大端 。
 
 // 每次上电在遥控器下档采集一次参考角后，由偏移量计算本次运行的绝对角度。
 float yuntai_unfolded_angle_rad = NAN;
@@ -74,7 +74,7 @@ uint32_t fold_settle_start_ms = 0U;
 bool fold_settling = false;
 float motor_b_hold_angle_rad = 0.0f;
 
-constexpr float kFoldAngleToleranceRad = 0.05f;      //到位角度容差
+constexpr float kFoldAngleToleranceRad = 0.15f;      //到位角度容差
 constexpr float kFoldSpeedToleranceRadS = 0.1f;      //到位速度容差
 constexpr uint32_t kFoldSettleMs = 100U;             //到位时间
 constexpr uint32_t kFoldHomeSettleMs = 100U;         // 下档且静止后才采集开机参考角。
@@ -84,7 +84,7 @@ constexpr float kLimitFeedbackToleranceRad = 0.02f;  // 限位反馈容差，避
 // A 参数来自 feature/motor_b_pid；保留多圈误差，避免跨越机械限位取最短路径。
 sp::PID motor_a_pid_angle(0.001f, 5.0f, 2.0f, 0.0f, 5.0f, 2.5f, 1.0f, false, true);
 sp::PID motor_a_pid_speed(
-  0.001f, 0.35f, 0.04f, 0.0f, kMotorAMaxGivenTorqueNm, 0.2f, 1.0f, false, true);
+  0.001f, 0.3f, 0.04f, 0.0f, kMotorAMaxGivenTorqueNm, 0.2f, 1.0f, false, true);
 // B 参数来自 feature/pid_motor_a；该分支没有重力补偿，仍只使用 PID 保持角度。
 sp::PID motor_b_pid_angle(0.001f, 5.0f, 2.51f, 0.0f, 5.0f, 2.5f, 1.0f, true, true);
 sp::PID motor_b_pid_speed(0.001f, 0.1f, 0.08f, 0.0f, 0.3f, 0.2f, 1.0f, false, true);
