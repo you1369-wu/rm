@@ -11,8 +11,8 @@ extern "C" void laser_task(void const * argument)
 
   // 4.4.7-1: 独立任务接收测距；折叠状态机与电机命令由 control_task 负责。
   laser.start_receive();
-  laser.set_baud_rate_115200();
-  laser.save_config();
+  // laser.set_baud_rate_115200();
+  //laser.save_config();
 
   while (true) {
     // 4.4.7-1: 仅发布未超时的有效距离；0xFFFF 表示本轮无可用测距。

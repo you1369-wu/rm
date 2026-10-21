@@ -51,7 +51,7 @@
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId imutaskHandle;
-osThreadId usarttaskHandle;
+osThreadId plotTaskHandle;
 osThreadId remoteTaskHandle;
 osThreadId ledtaskHandle;
 osThreadId buzzerTaskHandle;
@@ -64,7 +64,7 @@ osThreadId laserTaskHandle;
 
 void StartDefaultTask(void const * argument);
 extern void imu_task(void const * argument);
-extern void usart_task(void const * argument);
+extern void plot_task(void const * argument);
 extern void remote_task(void const * argument);
 extern void led_task(void const * argument);
 extern void buzzer_task(void const * argument);
@@ -124,9 +124,9 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(imutask, imu_task, osPriorityHigh, 0, 512);
   imutaskHandle = osThreadCreate(osThread(imutask), NULL);
 
-  /* definition and creation of usarttask */
-  osThreadDef(usarttask, usart_task, osPriorityLow, 0, 512);
-  usarttaskHandle = osThreadCreate(osThread(usarttask), NULL);
+  /* USART1用于A电机速度PID绘图，暂不创建角度文本打印任务，避免混帧。 */
+  osThreadDef(plotTask, plot_task, osPriorityLow, 0, 512);
+  plotTaskHandle = osThreadCreate(osThread(plotTask), NULL);
 
   /* definition and creation of remoteTask */
   osThreadDef(remoteTask, remote_task, osPriorityNormal, 0, 512);

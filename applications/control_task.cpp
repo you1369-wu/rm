@@ -32,16 +32,16 @@ uint16_t min_distance_cm = 30U;             // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
 
 // 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
-// 三项必须先实测并填写；NAN 会禁止自动控制，不能从一个端点推算其他位置。
-float yuntai_other_limit_offset_rad = NAN;
-float yuntai_unfolded_offset_rad = NAN;
-float yuntai_folded_offset_rad = NAN;
+// 实测机械最小端 = 最大端 + 1.5；两目标各向行程内退 0.2，任一偏移为 NAN 则禁止控制。
+float yuntai_other_limit_offset_rad = 1.5f;  // 机械最小限位端相对开机最大端。
+float yuntai_unfolded_offset_rad = 1.3f;     // 展开 = 机械最小端 - 0.2 = 最大端 + 1.3。
+float yuntai_folded_offset_rad = 0.2f;       // 折叠 = 机械最大端 + 0.2。
 
 // 每次上电在遥控器下档采集一次参考角后，由偏移量计算本次运行的绝对角度。
 float yuntai_unfolded_angle_rad = NAN;
 float yuntai_folded_angle_rad = NAN;
-float yuntai_min_angle_rad = NAN;         // 云台折叠机构最小角度，单位 rad。
-float yuntai_max_angle_rad = NAN;         // 云台折叠机构最大角度，单位 rad。
+float yuntai_min_angle_rad = NAN;         // 反馈数值下限，本次对应机械最大端，单位 rad。
+float yuntai_max_angle_rad = NAN;         // 反馈数值上限，本次对应机械最小端，单位 rad。
 uint32_t fold_motion_timeout_ms = 5000U;  //折叠或复位超时保护（超过5s没到位则异常退出）
 uint32_t fold_hold_duration_ms = 5000U;   //保持折叠状态时间
 

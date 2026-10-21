@@ -6,12 +6,14 @@ Target: `feature/wuyou-yuntai_fold`, based on `2dfe6c3`.
 
 | Target motor | Parameter source | Source commit | Target CAN ID |
 | --- | --- | --- | --- |
-| A, folding joint | `feature/motor_b_pid` | `f909131` | 1, unchanged |
-| B, yaw/hold joint | `feature/pid_motor_a` | `965feed` | 2, unchanged |
+| A, folding joint | `feature/motor_b_pid` | `f909131` | 2, confirmed physical folding motor |
+| B, yaw/hold joint | `feature/pid_motor_a` | `965feed` | 1, holding motor |
 
-The source test motor CAN IDs and source test targets (`angle + 1.3` or
-`angle + 2`) are NOT copied. The target branch still controls folding targets
-and captures B's hold angle in its original state machine.
+The motor objects now match the physical motors confirmed by the operator:
+ID 2 receives the folding/unfolding target, while ID 1 holds its entry angle.
+The source test targets (`angle + 1.3` or `angle + 2`) are NOT copied. The
+target branch still derives folding targets from its calibrated mechanical
+offsets and captures B's hold angle in its original state machine.
 
 ## PID Parameters
 
@@ -53,11 +55,20 @@ reference pose. The existing startup procedure is retained:
 4. MID/UP keep their original folding behavior. DOWN, faults and lost feedback
    still send zero torque, including disabling gravity feedforward.
 
-The three mechanical offsets remain `NAN`, exactly as in the target branch.
-Fill `yuntai_other_limit_offset_rad`, `yuntai_unfolded_offset_rad` and
-`yuntai_folded_offset_rad` using measured values before automatic motion.
-Until then calibration fails and motion stays disabled. No offsets are guessed
-from the single-motor test setpoints.
+The operator measured these offsets from the startup mechanical maximum:
+
+| Position | Offset from startup maximum (rad) |
+| --- | --- |
+| Other endpoint, called the mechanical minimum | +1.5 |
+| Folded target | +0.2 |
+| Unfolded target, mechanical minimum minus 0.2 | +1.3 |
+
+These are now the default offset variables. Absolute angles still start as
+`NAN` and are computed by the existing DOWN-switch startup calibration.
+Setting an offset to `NAN` still prevents successful calibration and motion.
+The safety variables use numerical ordering: `yuntai_min_angle_rad = home`
+and `yuntai_max_angle_rad = home + 1.5`. The operator's mechanical endpoint
+names must not be used to reverse these numerical bounds.
 
 The original A travel-direction check runs AFTER gravity addition and total
 torque limiting. Gravity cannot bypass that check. B still holds the original
@@ -94,7 +105,8 @@ Matching source CAN options is not a prerequisite for these numerical PID gains.
 Do not copy removal of USART6, its DMA/IRQs, or the laser task from test branches.
 
 `control_task` remains Realtime/512 words, IMU High/512, and remote Normal/512.
-USART3 remote settings, system clocks and motor CAN IDs are unchanged.
+USART3 remote settings and system clocks are unchanged. The application motor
+ID mapping is A=2 and B=1; this does not require a CubeMX change.
 GM6020 current-loop enablement is a motor-side setting, not a CubeMX option.
 
 ## Verification

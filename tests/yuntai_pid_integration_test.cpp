@@ -67,8 +67,8 @@ void prepare()
   fold_fault = FoldFault::NONE;
   fold_trigger_armed = true;
   yuntai_other_limit_offset_rad = 1.5f;
-  yuntai_unfolded_offset_rad = 0.0f;
-  yuntai_folded_offset_rad = 1.3f;
+  yuntai_unfolded_offset_rad = 1.3f;
+  yuntai_folded_offset_rad = 0.2f;
   motor_a_gravity_horizontal_angle_rad = NAN;
   check(calibrate_yuntai_from_max_angle(), "valid offsets calibrate successfully");
   fold_home_calibrated = true;
@@ -123,10 +123,36 @@ void CAN::send(uint32_t tx_id)
 
 int main()
 {
-  check(std::isnan(yuntai_other_limit_offset_rad) && std::isnan(yuntai_unfolded_offset_rad) &&
-          std::isnan(yuntai_folded_offset_rad), "unmeasured mechanical offsets remain unset");
-  check(motor_a.rx_id == 0x205 && motor_b.rx_id == 0x206,
-        "target branch CAN motor IDs are unchanged");
+  check(near(yuntai_other_limit_offset_rad, 1.5f) && near(yuntai_unfolded_offset_rad, 1.3f) &&
+          near(yuntai_folded_offset_rad, 0.2f), "production defaults match the measured offsets");
+  check(std::isnan(yuntai_min_angle_rad) && std::isnan(yuntai_max_angle_rad) &&
+          std::isnan(motor_a_gravity_horizontal_angle_rad),
+        "absolute limits and horizontal reference still require startup calibration");
+  motor_a.angle = 2.0f;
+  check(calibrate_yuntai_from_max_angle(), "measured production defaults pass calibration");
+  check(near(yuntai_min_angle_rad, 2.0f) && near(yuntai_max_angle_rad, 3.5f) &&
+          near(yuntai_folded_angle_rad, 2.2f) && near(yuntai_unfolded_angle_rad, 3.3f),
+        "physical endpoint names do not reverse the numerical safety limits");
+  check(motor_a.rx_id == 0x206 && motor_b.rx_id == 0x205,
+        "folding A uses physical ID 2 and holding B uses physical ID 1");
+
+  prepare();
+  fold_home_calibrated = false;
+  motor_a_gravity_horizontal_angle_rad = NAN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(!fold_control_initialized, "MID cannot bypass startup DOWN calibration");
+  check_zero_commands("MID without calibration keeps both motors disabled");
+
+  prepare();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(fold_control_initialized && fold_stage == FoldStage::UNFOLDING &&
+          near(motor_a_data.target_angle_set, motor_a.angle + 1.3f) &&
+          near(motor_b_data.target_angle_set, motor_b.angle),
+        "calibrated MID unfolds A while holding B at its current angle");
+  check(raw_slot(1) > 0 && raw_slot(0) == 0,
+        "MID sends lifting current to physical ID 2, not the holding motor ID 1");
 
   prepare();
   fold_home_calibrated = false;
@@ -138,6 +164,11 @@ int main()
   control_tick();
   check(fold_home_calibrated && near(motor_a_gravity_horizontal_angle_rad, motor_a.angle),
         "down switch calibration also captures the horizontal reference after settling");
+  check(near(yuntai_min_angle_rad, motor_a.angle) &&
+          near(yuntai_max_angle_rad, motor_a.angle + 1.5f) &&
+          near(yuntai_folded_angle_rad, motor_a.angle + 0.2f) &&
+          near(yuntai_unfolded_angle_rad, motor_a.angle + 1.3f),
+        "startup down calibration derives both limits and targets from the captured maximum");
   check_zero_commands("startup calibration never applies gravity torque while disabled");
   const float captured_reference = motor_a_gravity_horizontal_angle_rad;
   motor_a.angle += 0.4f;
@@ -168,9 +199,9 @@ int main()
         "A adds actual-angle gravity compensation to the speed PID output");
   check(near(motor_b_data.given_torque, motor_b_pid_speed.out), "B remains PID-only");
   check(last_tx_id == 0x1FE && send_count == 1U, "both commands use one current-control frame");
-  check(raw_slot(0) == static_cast<int16_t>(motor_a_data.given_torque * 16384.0f / 2.223f) &&
-          raw_slot(1) == static_cast<int16_t>(motor_b_data.given_torque * 16384.0f / 2.223f),
-        "real RM_Motor cmd/write pack A and B into their original slots");
+  check(raw_slot(1) == static_cast<int16_t>(motor_a_data.given_torque * 16384.0f / 2.223f) &&
+          raw_slot(0) == static_cast<int16_t>(motor_b_data.given_torque * 16384.0f / 2.223f),
+        "real RM_Motor cmd/write pack folding A into ID 2 and holding B into ID 1");
 
   prepare();
   motor_a.angle += 0.5f;
@@ -184,7 +215,7 @@ int main()
   motor_a.angle += 0.5f;
   yuntai_max_angle_rad = motor_a.angle;
   run_motor_angle_control(motor_a.angle, motor_b.angle);
-  check(raw_slot(0) == 0, "upper limit blocks outward gravity torque even with zero PID error");
+  check(raw_slot(1) == 0, "upper limit blocks outward gravity torque even with zero PID error");
   run_motor_angle_control(motor_a.angle - 0.5f, motor_b.angle);
   check(motor_a_data.given_torque < 0.0f, "upper limit still allows torque back into the range");
 
@@ -192,7 +223,7 @@ int main()
   motor_a.angle -= 0.5f;
   yuntai_min_angle_rad = motor_a.angle;
   run_motor_angle_control(motor_a.angle, motor_b.angle);
-  check(raw_slot(0) == 0, "lower limit also blocks outward gravity torque");
+  check(raw_slot(1) == 0, "lower limit also blocks outward gravity torque");
 
   prepare();
   motor_a_gravity_horizontal_angle_rad = NAN;
@@ -223,6 +254,7 @@ int main()
   fold_control_initialized = true;
   motor_b_hold_angle_rad = motor_b.angle;
   fold_stage = FoldStage::READY;
+  motor_a.angle = yuntai_unfolded_angle_rad;
   run_yuntai_fold(0xFFFFU, 0U);
   check(fold_stage == FoldStage::READY, "invalid distance cannot trigger folding");
   run_yuntai_fold(30U, 0U);
