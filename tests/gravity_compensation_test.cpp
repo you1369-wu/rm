@@ -19,13 +19,13 @@ void check(bool result, const char * message)
 int main()
 {
   constexpr float pi = 3.14159265358979323846f;
-  constexpr double mass = 0.209, gravity = 9.81;
+  constexpr double mass = 0.229, gravity = 9.81;
   constexpr double x0 = (-161.414 - (-173.07)) * 0.001;
   constexpr double z0 = (954.657 - 1052.06) * 0.001;
   const double maximum = mass * gravity * std::hypot(x0, z0);
-  check(std::fabs(yuntai::calculate_gravity_compensation(0.0f) - 0.02389818024) < 1e-6,
+  check(std::fabs(yuntai::calculate_gravity_compensation(0.0f) - 0.02618508744) < 1e-6,
         "horizontal reference requires positive lifting torque");
-  check(std::fabs(yuntai::calculate_gravity_compensation(pi / 2.0f) - 0.19970439687) < 1e-6,
+  check(std::fabs(yuntai::calculate_gravity_compensation(pi / 2.0f) - 0.21881486547) < 1e-6,
         "positive 90-degree lift uses the original vertical COM offset");
 
   for (int i = -360; i <= 360; ++i) {

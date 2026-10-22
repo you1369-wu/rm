@@ -33,14 +33,14 @@ path through a mechanical stop. Other parameters match their mapped sources.
 ## Gravity Compensation And Startup Reference
 
 Only A receives gravity feedforward: the B source has no gravity model.
-The model uses the same tuned equivalent mass, 0.209 kg, and the same CAD
-geometry as `feature/motor_b_pid`:
+The model uses a branch-tuned equivalent mass of 0.229 kg, increased by 20 g
+from 0.209 kg, with the CAD geometry from `feature/motor_b_pid`:
 
 ```text
 x0 = 0.011656 m
 z0 = -0.097403 m
 delta = motor_a.angle - motor_a_gravity_horizontal_angle_rad
-gravity_torque = 0.209 * 9.81 * (x0*cos(delta) - z0*sin(delta))
+gravity_torque = 0.229 * 9.81 * (x0*cos(delta) - z0*sin(delta))
 given_torque_A = clamp(speed_PID.out + gravity_torque, -0.45, +0.45)
 ```
 

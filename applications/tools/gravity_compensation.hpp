@@ -8,7 +8,7 @@ namespace yuntai
 // Same model as feature/motor_b_pid. Positive delta lifts +X toward +Z.
 inline float calculate_gravity_compensation(float delta_rad)
 {
-  constexpr float mass_kg = 0.209f;  // Tuned equivalent mass: 179 g + 30 g.
+  constexpr float mass_kg = 0.229f;  // Tuned equivalent mass: 179 g + 50 g.
   constexpr float gravity_m_s2 = 9.81f;
   // CAD center of mass minus pivot; mm to m. Rotation axis is Y.
   constexpr float com_x_m = (-161.414f - (-173.07f)) * 0.001f;
