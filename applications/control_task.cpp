@@ -1,6 +1,8 @@
 //负责can的收发和电机控制
 #include "control_task.hpp"
 
+#include <cmath>
+
 #include "can.h"
 #include "cmsis_os.h"
 #include "fold_mode/fold_mode.hpp"
@@ -15,6 +17,29 @@ extern volatile uint16_t distance;
 
 GimbalData motor_a_data;
 GimbalData motor_b_data;
+
+ControlMode control_mode = ControlMode::DISABLED;
+
+//顶层状态机：右下失能，右中折叠，右上加左上循迹
+static ControlMode select_control_mode(
+  const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready)
+{
+  // 公共安全条件优先；遥控器或电机反馈异常时，不允许任何运动模式输出。
+  if (
+    !remote_ready || !remote_data.is_alive || !motors_ready || !std::isfinite(motor_a.angle) ||
+    !std::isfinite(motor_a.speed) || !std::isfinite(motor_b.angle) ||
+    !std::isfinite(motor_b.speed)) {
+    return ControlMode::DISABLED;
+  }
+
+  if (remote_data.sw_r == REMOTE_SWITCH_MID && fold_mode_ready()) {
+    return ControlMode::FOLD;
+  }
+  if (remote_data.sw_r == REMOTE_SWITCH_UP && remote_data.sw_l == REMOTE_SWITCH_UP) {
+    return ControlMode::TRACKING;
+  }
+  return ControlMode::DISABLED;
+}
 
 void run_disable_mode()
 {
@@ -58,8 +83,39 @@ extern "C" void control_task(void const * argument)
     const uint32_t now_ms = osKernelSysTick();
     const bool motors_ready = motor_a.is_alive(now_ms) && motor_b.is_alive(now_ms);
 
-    // 下档也必须更新折叠模块，保留开机标定及故障确认流程。
-    update_fold_mode(remote_data, remote_ready, motors_ready, distance, now_ms);
+    const ControlMode next_mode = select_control_mode(remote_data, remote_ready, motors_ready);
+    if (next_mode != control_mode) {
+      // 仅切换模式时通知折叠模块退出；先记录失联故障，并中断尚未完成的下档标定。
+      update_fold_mode(remote_data, remote_ready, motors_ready, distance, now_ms, false);
+
+      // 模式切换先清理旧控制输出和积分，不能把上一模式的力矩带入下一模式。
+      run_disable_mode();
+      control_mode = next_mode;
+    }
+
+    switch (control_mode) {
+      case ControlMode::DISABLED:
+        // 下档也必须更新折叠模块，保留开机标定及故障确认流程。
+        update_fold_mode(remote_data, remote_ready, motors_ready, distance, now_ms, false);
+        break;
+
+      case ControlMode::FOLD:
+        update_fold_mode(remote_data, remote_ready, motors_ready, distance, now_ms);
+
+        // 折叠过程中发生故障后，本周期即退回失能；故障仍由折叠模块锁存。
+        if (!fold_mode_ready()) {
+          update_fold_mode(remote_data, remote_ready, motors_ready, distance, now_ms, false);
+          control_mode = ControlMode::DISABLED;
+        }
+
+        break;
+
+      case ControlMode::TRACKING:
+        // main 尚未接入循迹模块，此处只保持公共失能，不再更新折叠模块。
+        run_disable_mode();
+        break;
+    }
+
     send_motor_commands();
 
     osDelay(1);

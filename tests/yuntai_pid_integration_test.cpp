@@ -53,6 +53,7 @@ void refresh_feedback()
 void prepare()
 {
   now_ms = 0U;
+  control_mode = ControlMode::DISABLED;
   refresh_feedback();
   remote_available = true;
   remote_input = {};
@@ -164,11 +165,13 @@ int main()
   remote_input.sw_r = REMOTE_SWITCH_MID;
   control_tick();
   check(!fold_control_initialized, "MID cannot bypass startup DOWN calibration");
+  check(control_mode == ControlMode::DISABLED, "missing home calibration selects DISABLED");
   check_zero_commands("MID without calibration keeps both motors disabled");
 
   prepare();
   remote_input.sw_r = REMOTE_SWITCH_MID;
   control_tick();
+  check(control_mode == ControlMode::FOLD, "calibrated MID selects FOLD");
   check(fold_control_initialized && fold_stage == FoldStage::UNFOLDING &&
           near(motor_a_data.target_angle_set, motor_a.angle + 1.3f) &&
           near(motor_b_data.target_angle_set, motor_b.angle),
@@ -192,6 +195,7 @@ int main()
           near(yuntai_unfolded_angle_rad, motor_a.angle + 1.3f),
         "startup down calibration derives both limits and targets from the captured maximum");
   check_zero_commands("startup calibration never applies gravity torque while disabled");
+  check(control_mode == ControlMode::DISABLED, "DOWN calibration never selects a motion mode");
   const float captured_reference = motor_a_gravity_horizontal_angle_rad;
   motor_a.angle += 0.4f;
   now_ms = 101U;
@@ -305,6 +309,7 @@ int main()
   remote_input.is_alive = false;
   control_tick();
   check(fold_fault == FoldFault::REMOTE_LOST, "remote loss handling is preserved");
+  check(control_mode == ControlMode::DISABLED, "remote loss selects DISABLED");
   check_zero_commands("remote loss suppresses gravity compensation");
   prepare();
   fold_control_initialized = true;
@@ -312,13 +317,139 @@ int main()
   now_ms = 100U;
   control_tick();
   check(fold_fault == FoldFault::FEEDBACK_LOST, "motor feedback timeout handling is preserved");
+  check(control_mode == ControlMode::DISABLED, "feedback timeout selects DISABLED");
   check_zero_commands("feedback timeout disables both motors");
 
   prepare();
   remote_input.sw_r = REMOTE_SWITCH_UP;
+  remote_input.sw_l = REMOTE_SWITCH_UP;
   control_tick();
-  check(fold_control_initialized && fold_stage == FoldStage::UNFOLDING,
-        "UP retains the original folding behavior until tracking is integrated");
+  check(control_mode == ControlMode::TRACKING && !fold_control_initialized,
+        "both switches UP select the reserved TRACKING state, not folding");
+  check_zero_commands("unimplemented TRACKING always sends zero torque");
+
+  // Sentinels verify that staying in TRACKING does not run folding housekeeping.
+  fold_control_initialized = true;
+  fold_home_settling = true;
+  fold_home_settle_start_ms = 123U;
+  fold_stage = FoldStage::FOLDED_HOLD;
+  fold_stage_start_ms = 456U;
+  fold_trigger_armed = false;
+  control_tick();
+  check(control_mode == ControlMode::TRACKING && fold_control_initialized &&
+          fold_home_settling && fold_home_settle_start_ms == 123U &&
+          fold_stage == FoldStage::FOLDED_HOLD && fold_stage_start_ms == 456U &&
+          !fold_trigger_armed, "steady TRACKING does not update folding state");
+  check_zero_commands("steady TRACKING still sends zero current through the shared sender");
+
+  prepare();
+  fold_home_calibrated = false;
+  motor_a_gravity_horizontal_angle_rad = NAN;
+  control_tick();
+  check(fold_home_settling, "DOWN starts the calibration settling interval");
+  now_ms = 50U;
+  refresh_feedback();
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::TRACKING && !fold_home_settling &&
+          !fold_home_calibrated, "entering TRACKING interrupts pending DOWN calibration");
+  now_ms = 200U;
+  refresh_feedback();
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(!fold_home_calibrated && fold_home_settling && fold_home_settle_start_ms == now_ms,
+        "returning to DOWN starts a fresh settling interval instead of reusing elapsed time");
+  now_ms = 300U;
+  refresh_feedback();
+  control_tick();
+  check(fold_home_calibrated, "DOWN calibration still completes after an uninterrupted interval");
+  check_zero_commands("calibration after a mode switch remains zero torque");
+
+  for (const auto left : {REMOTE_SWITCH_DOWN, REMOTE_SWITCH_MID}) {
+    prepare();
+    remote_input.sw_r = REMOTE_SWITCH_UP;
+    remote_input.sw_l = left;
+    control_tick();
+    check(control_mode == ControlMode::DISABLED && !fold_control_initialized,
+          "right UP without left UP selects DISABLED");
+    check_zero_commands("unused switch combinations cannot enable folding");
+  }
+
+  prepare();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(fold_control_initialized, "FOLD starts its internal motion stage");
+  check(motor_a_data.given_torque != 0.0f, "FOLD produces a command before switching away");
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::TRACKING && !fold_control_initialized,
+        "leaving FOLD terminates its internal motion stage");
+  check(fold_home_calibrated && fold_fault == FoldFault::NONE,
+        "mode switching preserves home calibration without creating a folding fault");
+  check_zero_commands("TRACKING cannot reuse the previous folding current");
+  check(motor_a_pid_angle.out == 0.0f && motor_a_pid_speed.out == 0.0f &&
+          motor_b_pid_angle.out == 0.0f && motor_b_pid_speed.out == 0.0f,
+        "mode switching clears all folding PID outputs");
+  now_ms = 1000U;
+  refresh_feedback();
+  motor_b.angle = 1.4f;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && fold_stage == FoldStage::UNFOLDING &&
+          fold_stage_start_ms == now_ms && near(motor_b_hold_angle_rad, motor_b.angle),
+        "reentering FOLD starts a fresh motion timer and captures the current hold angle");
+
+  prepare();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_mode = ControlMode::FOLD;
+  fold_control_initialized = true;
+  fold_stage = FoldStage::FOLDING;
+  now_ms = fold_motion_timeout_ms;
+  refresh_feedback();
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::FOLD_TIMEOUT,
+        "a folding timeout returns to DISABLED in the same control period");
+  check(!fold_control_initialized,
+        "a folding timeout also performs exit cleanup in the same control period");
+  check_zero_commands("top-level timeout handling sends a zero-current frame");
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(fold_fault == FoldFault::FOLD_TIMEOUT,
+        "switching to TRACKING cannot clear a latched folding fault");
+  check_zero_commands("reserved TRACKING remains disabled after a folding fault");
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::FOLD_TIMEOUT,
+        "returning to MID cannot bypass DOWN fault acknowledgment");
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::NONE &&
+          fold_home_calibrated, "DOWN acknowledges the fault without losing the home reference");
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && fold_control_initialized,
+        "folding can restart after DOWN acknowledgment");
+
+  prepare();
+  fold_control_initialized = true;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  remote_available = false;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::REMOTE_LOST,
+        "missing remote data disables motion and preserves the loss fault");
+  check_zero_commands("missing remote data never leaves an old current active");
+
+  prepare();
+  fold_control_initialized = true;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  motor_b.speed = NAN;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::FEEDBACK_LOST,
+        "nonfinite feedback prevents selection of a motion mode");
+  check_zero_commands("nonfinite feedback sends zero current");
 
   prepare();
   angle_control_tick(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
@@ -333,5 +464,5 @@ int main()
   check_zero_commands("shared disable uses the common zero-torque frame");
 
   std::cout << "PASS: mapped PID gains, startup calibration, gravity sum, torque cap, CAN slots, "
-               "travel limits, disable priorities, fault paths and folding sequence\n";
+               "travel limits, disable priorities, fault paths, folding sequence and mode transitions\n";
 }

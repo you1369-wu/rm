@@ -263,7 +263,7 @@ void run_yuntai_fold(uint16_t distance_cm, uint32_t now_ms)
 
 void update_fold_mode(
   const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready,
-  uint16_t distance_cm, uint32_t now_ms)
+  uint16_t distance_cm, uint32_t now_ms, bool active)
 {
   // 下档零力矩优先；故障锁存后必须经过下档才能重新允许运动。
   if (remote_ready && remote_data.is_alive && remote_data.sw_r == REMOTE_SWITCH_DOWN) {
@@ -307,6 +307,12 @@ void update_fold_mode(
     fold_control_initialized = false;
     run_disable_mode();
   }
+  else if (!active) {
+    // 未选择折叠模式时结束本段运动；保留本次标定和故障，下次进入重新初始化。
+    fold_home_settling = false;
+    fold_control_initialized = false;
+    run_disable_mode();
+  }
   else if (!fold_home_calibrated) {
     // 未采集参考角、偏移量未填或配置无效时，禁止进入角度 PID。
     fold_home_settling = false;
@@ -320,4 +326,9 @@ void update_fold_mode(
     // 有效距离触发折叠；到位后保持 5 秒，再返回展开角度。
     run_yuntai_fold(distance_cm, now_ms);
   }
+}
+
+bool fold_mode_ready()
+{
+  return fold_home_calibrated && fold_fault == FoldFault::NONE;
 }
