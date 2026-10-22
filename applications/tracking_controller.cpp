@@ -1,4 +1,5 @@
 #include "tracking_controller.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -11,8 +12,9 @@ bool finite(Reference r)
 
 AxisOutput AxisController::step(Reference r, float position, float velocity, float dt)
 {
-  if (!finite(r) || !std::isfinite(position) || !std::isfinite(velocity) ||
-      !std::isfinite(dt) || dt <= 0.0f || dt > 0.005f) {
+  if (
+    !finite(r) || !std::isfinite(position) || !std::isfinite(velocity) || !std::isfinite(dt) ||
+    dt <= 0.0f || dt > 0.005f) {
     reset();
     return {};
   }
@@ -22,11 +24,11 @@ AxisOutput AxisController::step(Reference r, float position, float velocity, flo
   const float speed_raw = gains_.angle_kp * out.error + gains_.velocity_ff * r.velocity;
   out.speed_command = std::clamp(speed_raw, -gains_.max_speed, gains_.max_speed);
   const float speed_error = out.speed_command - velocity;
-  const float feedforward = gains_.acceleration_ff * r.acceleration +
-                            gains_.gravity_ff * std::cos(position);
+  const float feedforward =
+    gains_.acceleration_ff * r.acceleration + gains_.gravity_ff * std::cos(position);
   const float base = gains_.speed_kp * speed_error + feedforward;
-  const float candidate = std::clamp(integral_ + gains_.speed_ki * speed_error * dt,
-                                     -gains_.max_integral, gains_.max_integral);
+  const float candidate = std::clamp(
+    integral_ + gains_.speed_ki * speed_error * dt, -gains_.max_integral, gains_.max_integral);
   const float candidate_output = base + candidate;
   // 条件积分：饱和时拒绝加深饱和的增量，允许积分向解除饱和方向回退。
   const float increment = candidate - integral_;
@@ -46,8 +48,9 @@ Reference approach(float start, float end, float elapsed_s, float duration_s)
   const float s2 = s * s, s3 = s2 * s;
   const float delta = end - start;
   // 五次多项式，起终点速度、加速度均为零。
-  return {start + delta * (10.0f * s3 - 15.0f * s3 * s + 6.0f * s3 * s2),
-          delta * (30.0f * s2 - 60.0f * s3 + 30.0f * s2 * s2) / duration_s,
-          delta * (60.0f * s - 180.0f * s2 + 120.0f * s3) / (duration_s * duration_s)};
+  return {
+    start + delta * (10.0f * s3 - 15.0f * s3 * s + 6.0f * s3 * s2),
+    delta * (30.0f * s2 - 60.0f * s3 + 30.0f * s2 * s2) / duration_s,
+    delta * (60.0f * s - 180.0f * s2 + 120.0f * s3) / (duration_s * duration_s)};
 }
-} // namespace tracking
+}  // namespace tracking
