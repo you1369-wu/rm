@@ -124,7 +124,7 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(imutask, imu_task, osPriorityHigh, 0, 512);
   imutaskHandle = osThreadCreate(osThread(imutask), NULL);
 
-  /* USART1用于A电机速度PID绘图，暂不创建角度文本打印任务，避免混帧。 */
+  /* definition and creation of plotTask */
   osThreadDef(plotTask, plot_task, osPriorityLow, 0, 512);
   plotTaskHandle = osThreadCreate(osThread(plotTask), NULL);
 
