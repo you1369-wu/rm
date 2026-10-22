@@ -13,7 +13,8 @@ namespace
 {
 using namespace tracking_config;
 AxisController yaw_controller(kYaw), pitch_controller(kTip), arm_controller(kArm);
-bool calibrated = false, calibrating = false, calibration_latched = false;
+bool calibrated = false, calibrating = false, captured_once = false;
+float stable_a = 0, stable_b = 0, stable_c = 0;
 uint32_t calibration_ms = 0;
 float tip_origin = 0, arm_start = 0;
 Telemetry current{}, published{};
@@ -23,7 +24,6 @@ uint32_t entry_ms = 0, settled_ms = 0, large_error_ms = 0;
 bool settling = false, large_error = false;
 double error_square_yaw = 0, error_square_pitch = 0;
 
-float wrap(float value) { return std::remainder(value, 6.283185307179586f); }
 bool inside(float value, float low, float high) { return value >= low && value <= high; }
 void clear_controllers()
 {
@@ -67,23 +67,53 @@ Telemetry read_telemetry()
 
 Command update(
   bool requested, bool acknowledge_down, bool remote_ok, const Feedback & f, uint32_t now_ms,
-  uint32_t gap_ms, bool calibrate)
+  uint32_t gap_ms)
 {
   const float yaw_encoder = f.angle_a;
   const float pitch_encoder = f.angle_b;
-  const float yaw_zero = kMotorAZero;
-  const float pitch_zero = kMotorBZero;
   const bool valid = std::isfinite(f.angle_a) && std::isfinite(f.angle_b) &&
                      std::isfinite(f.speed_a) && std::isfinite(f.speed_b) &&
                      std::isfinite(f.angle_c) && std::isfinite(f.speed_c);
-  if (!f.alive || !valid) calibrated = false;
-  if (!calibrate || !remote_ok || requested) {
+  if (!f.alive || !valid) {
+    calibrated = false;
     calibrating = false;
-    calibration_latched = false;
   }
+  // 首次上电不依赖遥控器；反馈丢失后的重标定必须先退出运行并回右下档。
+  const bool can_capture = !captured_once || (!requested && remote_ok && acknowledge_down);
+  const bool stationary = f.alive && valid && std::fabs(f.speed_a) < kCalibrationSpeed &&
+                          std::fabs(f.speed_b) < kCalibrationSpeed &&
+                          std::fabs(f.speed_c) < kCalibrationSpeed && gap_ms > 0 &&
+                          gap_ms <= kMaxControlGapMs;
+  if (!calibrated && can_capture && stationary) {
+    if (
+      !calibrating || std::fabs(f.angle_a - stable_a) > kCalibrationMotion ||
+      std::fabs(f.angle_b - stable_b) > kCalibrationMotion ||
+      std::fabs(f.angle_c - stable_c) > kCalibrationMotion) {
+      calibrating = true;
+      calibration_ms = now_ms;
+      stable_a = f.angle_a;
+      stable_b = f.angle_b;
+      stable_c = f.angle_c;
+    }
+    if (now_ms - calibration_ms >= kCalibrationDurationMs) {
+      yaw_origin = f.angle_a;
+      pitch_origin = f.angle_b;
+      tip_origin = f.angle_c;
+      calibrated = true;
+      captured_once = true;
+      calibrating = false;
+    }
+  }
+  else
+    calibrating = false;
   current.gap_ms = gap_ms;
+  // 即使遥控器未连接，也发布角度反馈，便于排查通道不更新。
+  current.actual_yaw = valid ? kYawDirection * (yaw_encoder - yaw_origin) : 0;
+  current.actual_arm = valid ? kPitchDirection * (pitch_encoder - pitch_origin) : 0;
+  current.actual_tip = valid ? kTipDirection * (f.angle_c - tip_origin) : 0;
+  current.actual_pitch = current.actual_arm + current.actual_tip;
   current.actual_speed_yaw = kYawDirection * f.speed_a;
-  current.actual_speed_pitch = kPitchDirection * f.speed_b;
+  current.actual_speed_pitch = kPitchDirection * f.speed_b + kTipDirection * f.speed_c;
 
   if (!remote_ok) {
     if (
@@ -101,30 +131,6 @@ Command update(
       current.fault = Fault::None;
     }
     current.state = current.fault == Fault::None ? State::Disabled : State::Fault;
-    current.actual_yaw = valid ? kYawDirection * wrap(yaw_encoder - yaw_zero) : 0;
-    current.actual_pitch = valid ? kPitchDirection * wrap(pitch_encoder - pitch_zero) : 0;
-    current.actual_arm = current.actual_pitch;
-    // 右下+左中，平台人工放水平且三轴静止持续1秒；一次拨杆动作只标定一次。
-    if (
-      calibrate && acknowledge_down && f.alive && valid && !calibration_latched &&
-      std::fabs(f.speed_a) < 0.05f && std::fabs(f.speed_b) < 0.05f &&
-      std::fabs(f.speed_c) < 0.05f && inside(current.actual_arm, kArmMin, kArmMax)) {
-      if (!calibrating) {
-        calibrated = false;
-        calibrating = true;
-        calibration_ms = now_ms;
-      }
-      if (now_ms - calibration_ms >= kCalibrationDurationMs) {
-        tip_origin =
-          f.angle_c - kTipDirection * (kCalibrationPitch - current.actual_arm - kMountPitchOffset);
-        calibrated = true;
-        calibration_latched = true;
-      }
-    }
-    else
-      calibrating = false;
-    current.actual_tip = kTipDirection * (f.angle_c - tip_origin);
-    current.actual_pitch = current.actual_arm + current.actual_tip + kMountPitchOffset;
     return publish();
   }
   if (current.state == State::Fault) return publish();
@@ -160,17 +166,15 @@ Command update(
     current.gap_ms = gap_ms;
     entry_ms = now_ms;
     error_square_yaw = error_square_pitch = 0;
-    // 仅进入模式时选择与标定零点等价的最近一圈，此后保留连续角度。
-    yaw_origin = yaw_encoder - wrap(yaw_encoder - yaw_zero);
-    pitch_origin = pitch_encoder - wrap(pitch_encoder - pitch_zero);
+    // 进入/退出运行不能重设上电零点。
     yaw_start = kYawDirection * (yaw_encoder - yaw_origin);
     arm_start = kPitchDirection * (pitch_encoder - pitch_origin);
-    pitch_start = arm_start + kTipDirection * (f.angle_c - tip_origin) + kMountPitchOffset;
+    pitch_start = arm_start + kTipDirection * (f.angle_c - tip_origin);
   }
   current.actual_yaw = kYawDirection * (yaw_encoder - yaw_origin);
   current.actual_arm = kPitchDirection * (pitch_encoder - pitch_origin);
   current.actual_tip = kTipDirection * (f.angle_c - tip_origin);
-  current.actual_pitch = current.actual_arm + current.actual_tip + kMountPitchOffset;
+  current.actual_pitch = current.actual_arm + current.actual_tip;
   current.actual_speed_yaw = kYawDirection * f.speed_a;
   current.actual_speed_pitch = kPitchDirection * f.speed_b;
   const float arm_speed = kPitchDirection * f.speed_b;
@@ -246,8 +250,7 @@ Command update(
   // 末端俯仰 = 大臂关节角 + 顶部关节角 + 安装偏置。
   // 不对实测速度求导：顶部加速度前馈默认关闭。
   Reference tip_reference{
-    pitch_reference.position - current.actual_arm - kMountPitchOffset,
-    pitch_reference.velocity - arm_speed, 0};
+    pitch_reference.position - current.actual_arm, pitch_reference.velocity - arm_speed, 0};
   if (!inside(tip_reference.position, kTipMin, kTipMax)) {
     fail(Fault::TravelLimit);
     return publish();

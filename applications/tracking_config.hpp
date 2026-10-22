@@ -6,14 +6,15 @@ namespace tracking_config
 {
 // 固定映射：A=底部yaw，B=大臂pitch，C=顶部M2006。
 // ID 暂定，烧录前改成实物值；GM6020 使用电流模式。
-constexpr uint8_t kYawId = 1, kArmId = 2, kTipId = 1;
+constexpr uint8_t kYawId = 1, kArmId = 2, kTipId = 3;
 constexpr float kTipDirection = 1.0f;
-constexpr float kArmHold = 0.0f;
+constexpr float kArmHold = 0.0f;  // 相对上电位置，0表示保持上电姿态
 constexpr float kArmMin = -0.30f, kArmMax = 0.30f;
 constexpr float kTipMin = -0.90f, kTipMax = 0.90f;
-constexpr float kMountPitchOffset = 0.0f;
-constexpr float kCalibrationPitch = 0.0f;  // 手动标定时平台水平
+// 三轴在线且静止1秒后自动捕获零点；不是绝对水平标定。
 constexpr uint32_t kCalibrationDurationMs = 1000;
+constexpr float kCalibrationSpeed = 0.05f;
+constexpr float kCalibrationMotion = 0.01f;
 static_assert(
   kYawId >= 1 && kYawId <= 7 && kArmId >= 1 && kArmId <= 7 && kTipId >= 1 && kTipId <= 8 &&
     kYawId != kArmId,
@@ -21,8 +22,6 @@ static_assert(
 static_assert(
   0x204 + kYawId != 0x200 + kTipId && 0x204 + kArmId != 0x200 + kTipId,
   "CAN feedback ID collision");
-constexpr float kMotorAZero = 2.86164117f;  // 沿用原工程标定值，rad
-constexpr float kMotorBZero = 2.10692263f;
 constexpr float kYawDirection = 1.0f;  // 只能为 +1 或 -1
 constexpr float kPitchDirection = 1.0f;
 constexpr float kYawMin = -0.45f;  // 轨迹坐标系下的软件行程，须按机械结构修改

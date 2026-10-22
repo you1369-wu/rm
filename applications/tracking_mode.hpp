@@ -56,6 +56,6 @@ struct Command
 // 只由 control_task 调用；本模块不发送 CAN。
 Command update(
   bool requested, bool acknowledge_down, bool remote_ok, const Feedback & feedback, uint32_t now_ms,
-  uint32_t gap_ms, bool calibrate = false);
+  uint32_t gap_ms);
 Telemetry read_telemetry();
 }  // namespace tracking

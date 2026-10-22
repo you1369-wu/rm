@@ -58,8 +58,7 @@ extern "C" void control_task(void const * argument)
     const bool online = ready && remote.is_alive;
     const bool down = online && remote.sw_r == REMOTE_SWITCH_DOWN;
     const bool run = online && remote.sw_r == REMOTE_SWITCH_UP && remote.sw_l == REMOTE_SWITCH_UP;
-    const bool calibrate = down && remote.sw_l == REMOTE_SWITCH_MID;
-    const auto c = tracking::update(run, down, online, f, now, now - previous, calibrate);
+    const auto c = tracking::update(run, down, online, f, now, now - previous);
     previous = now;
     send_commands(c);
     if (xTaskGetTickCount() - wake >= pdMS_TO_TICKS(tracking_config::kControlPeriodMs))
