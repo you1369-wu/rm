@@ -26,9 +26,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "imu_task.h"
-#include "usart_task.h"
+#include "data_interfaces/usart_task.h"
 #include "remote_task.h"
-#include "can_task.h"
+#include "data_interfaces/can_task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

@@ -3,7 +3,7 @@
 #include <iostream>
 #include <limits>
 
-#include "../applications/tools/gravity_compensation.hpp"
+#include "../applications/fold_mode/gravity_compensation.hpp"
 
 namespace
 {

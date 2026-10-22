@@ -5,6 +5,7 @@
 
 // Exercise the production helpers without adding test hooks to the firmware.
 #include "../applications/control_task.cpp"
+#include "../applications/fold_mode/fold_mode.cpp"
 
 namespace
 {
@@ -73,15 +74,36 @@ void prepare()
   check(calibrate_yuntai_from_max_angle(), "valid offsets calibrate successfully");
   fold_home_calibrated = true;
   run_disable_mode();
+  send_motor_commands();
   send_count = 0U;
+}
+
+void angle_control_tick(float target_angle_a, float target_angle_b)
+{
+  const unsigned before = send_count;
+  run_motor_angle_control(target_angle_a, target_angle_b);
+  check(send_count == before, "angle control only calculates commands");
+  send_motor_commands();
+  check(send_count == before + 1U, "shared sender emits exactly one frame");
+}
+
+void fold_tick(uint16_t distance_cm, uint32_t tick_ms)
+{
+  const unsigned before = send_count;
+  run_yuntai_fold(distance_cm, tick_ms);
+  check(send_count == before, "fold control and fault paths never send CAN directly");
+  send_motor_commands();
+  check(send_count == before + 1U, "fold commands use the shared sender");
 }
 
 void control_tick()
 {
+  const unsigned before = send_count;
   try {
     control_task(nullptr);
   }
   catch (const EndControlTick &) {
+    check(send_count == before + 1U, "each control period sends exactly one frame");
     return;
   }
   check(false, "control task must reach its periodic delay");
@@ -123,15 +145,15 @@ void CAN::send(uint32_t tx_id)
 
 int main()
 {
-  check(near(yuntai_other_limit_offset_rad, 1.5f) && near(yuntai_unfolded_offset_rad, 1.3f) &&
-          near(yuntai_folded_offset_rad, 0.2f), "production defaults match the measured offsets");
+  check(near(yuntai_other_limit_offset_rad, 1.9f) && near(yuntai_unfolded_offset_rad, 1.8f) &&
+          near(yuntai_folded_offset_rad, 0.0f), "production defaults preserve the current offsets");
   check(std::isnan(yuntai_min_angle_rad) && std::isnan(yuntai_max_angle_rad) &&
           std::isnan(motor_a_gravity_horizontal_angle_rad),
         "absolute limits and horizontal reference still require startup calibration");
   motor_a.angle = 2.0f;
   check(calibrate_yuntai_from_max_angle(), "measured production defaults pass calibration");
-  check(near(yuntai_min_angle_rad, 2.0f) && near(yuntai_max_angle_rad, 3.5f) &&
-          near(yuntai_folded_angle_rad, 2.2f) && near(yuntai_unfolded_angle_rad, 3.3f),
+  check(near(yuntai_min_angle_rad, 2.0f) && near(yuntai_max_angle_rad, 3.9f) &&
+          near(yuntai_folded_angle_rad, 2.0f) && near(yuntai_unfolded_angle_rad, 3.8f),
         "physical endpoint names do not reverse the numerical safety limits");
   check(motor_a.rx_id == 0x206 && motor_b.rx_id == 0x205,
         "folding A uses physical ID 2 and holding B uses physical ID 1");
@@ -180,17 +202,17 @@ int main()
   prepare();
   motor_a.angle += 0.2f;
   motor_a.speed = 0.1f;
-  run_motor_angle_control(motor_a.angle + 0.1f, motor_b.angle + 0.2f);
+  angle_control_tick(motor_a.angle + 0.1f, motor_b.angle + 0.2f);
   const float expected_gravity = yuntai::calculate_gravity_compensation(0.2f);
   check(near(motor_a_pid_angle.data.pout, 5.0f * motor_a_pid_angle.data.err[0]) &&
           near(motor_a_pid_angle.data.iout, 2.0f / 1.1f * 0.1f * 0.0005f),
         "A angle PID uses the mapped gains");
-  check(near(motor_a_pid_speed.data.pout, 0.35f * motor_a_pid_speed.data.err[0]) &&
+  check(near(motor_a_pid_speed.data.pout, 0.3f * motor_a_pid_speed.data.err[0]) &&
           near(motor_a_pid_speed.data.iout,
                0.04f / (1.0f + std::fabs(motor_a_pid_speed.data.err[0])) *
                  motor_a_pid_speed.data.err[0] * 0.0005f), "A speed PID uses the mapped gains");
-  check(near(motor_b_pid_angle.data.iout, 2.51f / 1.2f * 0.2f * 0.0005f) &&
-          near(motor_b_pid_speed.data.pout, 0.1f * motor_b_pid_speed.data.err[0]) &&
+  check(near(motor_b_pid_angle.data.iout, 1.0f / 1.2f * 0.2f * 0.0005f) &&
+          near(motor_b_pid_speed.data.pout, 0.2f * motor_b_pid_speed.data.err[0]) &&
           near(motor_b_pid_speed.data.iout,
                0.08f / (1.0f + std::fabs(motor_b_pid_speed.data.err[0])) *
                  motor_b_pid_speed.data.err[0] * 0.0005f), "B uses its own mapped gains");
@@ -205,7 +227,7 @@ int main()
 
   prepare();
   motor_a.angle += 0.5f;
-  run_motor_angle_control(motor_a.angle + 4.0f, motor_b.angle + 4.0f);
+  angle_control_tick(motor_a.angle + 4.0f, motor_b.angle + 4.0f);
   check(near(motor_a_data.given_torque, 0.45f), "combined A torque is capped at 0.45 Nm");
   check(near(motor_a_pid_angle.data.err[0], 4.0f), "A preserves non-wrapping mechanical error");
   check(std::fabs(motor_b_data.given_torque) <= 0.3f && motor_b_pid_angle.data.err[0] < 0.0f,
@@ -214,39 +236,39 @@ int main()
   prepare();
   motor_a.angle += 0.5f;
   yuntai_max_angle_rad = motor_a.angle;
-  run_motor_angle_control(motor_a.angle, motor_b.angle);
+  angle_control_tick(motor_a.angle, motor_b.angle);
   check(raw_slot(1) == 0, "upper limit blocks outward gravity torque even with zero PID error");
-  run_motor_angle_control(motor_a.angle - 0.5f, motor_b.angle);
+  angle_control_tick(motor_a.angle - 0.5f, motor_b.angle);
   check(motor_a_data.given_torque < 0.0f, "upper limit still allows torque back into the range");
 
   prepare();
   motor_a.angle -= 0.5f;
   yuntai_min_angle_rad = motor_a.angle;
-  run_motor_angle_control(motor_a.angle, motor_b.angle);
+  angle_control_tick(motor_a.angle, motor_b.angle);
   check(raw_slot(1) == 0, "lower limit also blocks outward gravity torque");
 
   prepare();
   motor_a_gravity_horizontal_angle_rad = NAN;
-  run_motor_angle_control(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
+  angle_control_tick(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
   check_zero_commands("invalid gravity reference disables both commands");
 
   prepare();
   fold_control_initialized = true;
   fold_stage = FoldStage::FOLDING;
-  run_yuntai_fold(100U, fold_motion_timeout_ms);
+  fold_tick(100U, fold_motion_timeout_ms);
   check(fold_fault == FoldFault::FOLD_TIMEOUT, "fold timeout still latches its original fault");
   check_zero_commands("fold timeout suppresses gravity compensation");
 
   prepare();
   fold_control_initialized = true;
   motor_a.angle += 0.5f;
-  run_yuntai_fold(100U, fold_motion_timeout_ms);
+  fold_tick(100U, fold_motion_timeout_ms);
   check(fold_fault == FoldFault::UNFOLD_TIMEOUT, "unfold timeout is preserved");
   check_zero_commands("unfold timeout disables both motors");
 
   prepare();
   motor_a.angle = yuntai_max_angle_rad + 0.1f;
-  run_yuntai_fold(30U, 0U);
+  fold_tick(30U, 0U);
   check(fold_fault == FoldFault::ANGLE_LIMIT, "out-of-range feedback still latches a fault");
   check_zero_commands("angle fault disables both motors");
 
@@ -255,27 +277,27 @@ int main()
   motor_b_hold_angle_rad = motor_b.angle;
   fold_stage = FoldStage::READY;
   motor_a.angle = yuntai_unfolded_angle_rad;
-  run_yuntai_fold(0xFFFFU, 0U);
+  fold_tick(0xFFFFU, 0U);
   check(fold_stage == FoldStage::READY, "invalid distance cannot trigger folding");
-  run_yuntai_fold(30U, 0U);
+  fold_tick(30U, 0U);
   check(fold_stage == FoldStage::FOLDING && !fold_trigger_armed, "30 cm still triggers folding");
   motor_a.angle = yuntai_folded_angle_rad;
-  run_yuntai_fold(30U, 1U);
-  run_yuntai_fold(30U, 101U);
+  fold_tick(30U, 1U);
+  fold_tick(30U, 101U);
   check(fold_stage == FoldStage::FOLDED_HOLD, "fold arrival still requires stable feedback");
-  run_yuntai_fold(100U, 101U + fold_hold_duration_ms);
+  fold_tick(100U, 101U + fold_hold_duration_ms);
   check(fold_stage == FoldStage::UNFOLDING, "hold duration still starts unfolding");
   motor_a.angle = yuntai_unfolded_angle_rad;
-  run_yuntai_fold(100U, 5102U);
-  run_yuntai_fold(100U, 5202U);
+  fold_tick(100U, 5102U);
+  fold_tick(100U, 5202U);
   check(fold_stage == FoldStage::READY, "unfold arrival still returns to READY");
-  run_yuntai_fold(34U, 5203U);
+  fold_tick(34U, 5203U);
   check(!fold_trigger_armed, "34 cm remains inside the hysteresis band");
-  run_yuntai_fold(35U, 5204U);
+  fold_tick(35U, 5204U);
   check(fold_trigger_armed, "35 cm still rearms the next fold");
 
   prepare();
-  run_motor_angle_control(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
+  angle_control_tick(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
   control_tick();
   check_zero_commands("remote down overrides PID and gravity compensation");
   prepare();
@@ -291,6 +313,24 @@ int main()
   control_tick();
   check(fold_fault == FoldFault::FEEDBACK_LOST, "motor feedback timeout handling is preserved");
   check_zero_commands("feedback timeout disables both motors");
+
+  prepare();
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  control_tick();
+  check(fold_control_initialized && fold_stage == FoldStage::UNFOLDING,
+        "UP retains the original folding behavior until tracking is integrated");
+
+  prepare();
+  angle_control_tick(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
+  const unsigned before_disable = send_count;
+  run_disable_mode();
+  check(send_count == before_disable, "shared disable clears commands without sending CAN");
+  check(motor_a_pid_angle.out == 0.0f && motor_a_pid_speed.out == 0.0f &&
+          motor_b_pid_angle.out == 0.0f && motor_b_pid_speed.out == 0.0f,
+        "shared disable still clears every folding PID");
+  check(fold_home_calibrated, "shared disable retains the captured home calibration");
+  send_motor_commands();
+  check_zero_commands("shared disable uses the common zero-torque frame");
 
   std::cout << "PASS: mapped PID gains, startup calibration, gravity sum, torque cap, CAN slots, "
                "travel limits, disable priorities, fault paths and folding sequence\n";

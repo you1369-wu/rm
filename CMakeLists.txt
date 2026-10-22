@@ -48,17 +48,18 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/imu_task.cpp
-    applications/usart_task.cpp
+    applications/data_interfaces/usart_task.cpp
     applications/remote_task.cpp
     applications/laser_task.cpp
-    applications/usart_callbacks.cpp
-    applications/can_task.cpp
+    applications/data_interfaces/usart_callbacks.cpp
+    applications/data_interfaces/can_task.cpp
     applications/control_task.cpp
+    applications/fold_mode/fold_mode.cpp
     applications/tools/plot_task.cpp
     applications/pid_train.cpp
-    applications/led_task.cpp
-    applications/power_on_melody.cpp
-    applications/buzzer_task.cpp
+    applications/io/led_task.cpp
+    applications/io/power_on_melody.cpp
+    applications/io/buzzer_task.cpp
     
     sp_middleware/io/bmi088/bmi088.cpp
     sp_middleware/io/dbus/dbus.cpp
