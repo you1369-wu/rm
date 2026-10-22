@@ -1,21 +1,26 @@
-// 用 USART1 打印 IMU 数据
+// 在失能下档用 USART1 打印两台电机的角度，供机械位置标定。
 #include "usart_task.h"
 
 #include "cmsis_os.h"
-#include "imu_task.h"
+#include "motor/rm_motor/rm_motor.hpp"
+#include "remote_task.h"
 #include "usart.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
+extern sp::RM_Motor motor_a;
+extern sp::RM_Motor motor_b;
+
 namespace
 {
-constexpr uint32_t kPrintPeriodMs = 20U;
+constexpr uint32_t kPrintPeriodMs = 100U;
 constexpr uint32_t kUartTimeoutMs = 20U;
 constexpr long kFixedPointScale = 1000L;
 
-char tx_buffer[192];
+char tx_buffer[64];
 
 long float_to_milli(float value)
 {
@@ -62,32 +67,14 @@ std::size_t append_fixed(char * buffer, std::size_t size, std::size_t offset, fl
   return offset + static_cast<std::size_t>(written);
 }
 
-std::size_t append_vector3(
-  char * buffer, std::size_t size, std::size_t offset, const ImuVector3Data & value)
-{
-  offset = append_fixed(buffer, size, offset, value.x);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, value.y);
-  offset = append_text(buffer, size, offset, ",");
-  return append_fixed(buffer, size, offset, value.z);
-}
-
-std::size_t build_imu_line(char * buffer, std::size_t size, const ImuTaskData & data)
+std::size_t build_angle_line(char * buffer, std::size_t size, float angle_a, float angle_b)
 {
   std::size_t offset = 0U;
 
-  offset = append_text(buffer, size, offset, "rpy_rad:");
-  offset = append_fixed(buffer, size, offset, data.euler.roll_rad);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, data.euler.pitch_rad);
-  offset = append_text(buffer, size, offset, ",");
-  offset = append_fixed(buffer, size, offset, data.euler.yaw_rad);
-  offset = append_text(buffer, size, offset, " gyro_rad_s:");
-  offset = append_vector3(buffer, size, offset, data.gyro_rad_s);
-  offset = append_text(buffer, size, offset, " acc_mps2:");
-  offset = append_vector3(buffer, size, offset, data.acc_mps2);
-  offset = append_text(buffer, size, offset, " temp_c:");
-  offset = append_fixed(buffer, size, offset, data.temp_c);
+  offset = append_text(buffer, size, offset, "motor_a_rad:");
+  offset = append_fixed(buffer, size, offset, angle_a);
+  offset = append_text(buffer, size, offset, " motor_b_rad:");
+  offset = append_fixed(buffer, size, offset, angle_b);
   offset = append_text(buffer, size, offset, "\r\n");
 
   return offset;
@@ -99,12 +86,21 @@ extern "C" void usart_task(void const * argument)
   (void)argument;
 
   while (true) {
-    ImuTaskData data = {};
-    if (imu_task_get_data(&data)) {
-      const std::size_t length = build_imu_line(tx_buffer, sizeof(tx_buffer), data);
-      HAL_UART_Transmit(
-        &huart1, reinterpret_cast<uint8_t *>(tx_buffer), static_cast<uint16_t>(length),
-        kUartTimeoutMs);
+    RemoteTaskData remote_data = {};
+    const uint32_t now_ms = osKernelSysTick();
+
+    // 仅在遥控器下档且反馈未超时时输出，避免把旧角度误当成标定数据。
+    if (remote_task_get_data(&remote_data) && remote_data.is_alive &&
+        remote_data.sw_r == REMOTE_SWITCH_DOWN && motor_a.is_alive(now_ms) &&
+        motor_b.is_alive(now_ms)) {
+      const float angle_a = motor_a.angle;
+      const float angle_b = motor_b.angle;
+      if (std::isfinite(angle_a) && std::isfinite(angle_b)) {
+        const std::size_t length = build_angle_line(tx_buffer, sizeof(tx_buffer), angle_a, angle_b);
+        HAL_UART_Transmit(
+          &huart1, reinterpret_cast<uint8_t *>(tx_buffer), static_cast<uint16_t>(length),
+          kUartTimeoutMs);
+      }
     }
 
     osDelay(kPrintPeriodMs);
