@@ -36,7 +36,7 @@ float yuntai_folded_angle_rad = NAN;
 float yuntai_min_angle_rad = NAN;         // 反馈数值下限，本次对应机械最大端，单位 rad。
 float yuntai_max_angle_rad = NAN;         // 反馈数值上限，本次对应机械最小端，单位 rad。
 uint32_t fold_motion_timeout_ms = 5000U;  //折叠或复位超时保护（超过5s没到位则异常退出）
-uint32_t fold_hold_duration_ms = 5000U;   //保持折叠状态时间
+uint32_t fold_hold_duration_ms = 3000U;   //保持折叠状态时间
 
 enum class FoldStage
 {
@@ -262,8 +262,8 @@ void run_yuntai_fold(uint16_t distance_cm, uint32_t now_ms)
 }
 
 void update_fold_mode(
-  const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready,
-  uint16_t distance_cm, uint32_t now_ms, bool active)
+  const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready, uint16_t distance_cm,
+  uint32_t now_ms, bool active)
 {
   // 下档零力矩优先；故障锁存后必须经过下档才能重新允许运动。
   if (remote_ready && remote_data.is_alive && remote_data.sw_r == REMOTE_SWITCH_DOWN) {
@@ -328,12 +328,6 @@ void update_fold_mode(
   }
 }
 
-bool fold_mode_ready()
-{
-  return fold_home_calibrated && fold_fault == FoldFault::NONE;
-}
+bool fold_mode_ready() { return fold_home_calibrated && fold_fault == FoldFault::NONE; }
 
-bool fold_mode_faulted()
-{
-  return fold_fault != FoldFault::NONE;
-}
+bool fold_mode_faulted() { return fold_fault != FoldFault::NONE; }
