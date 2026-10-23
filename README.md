@@ -8,6 +8,10 @@ with C/C++ application code and the `sp_middleware` submodule.
 
 ## Features
 
+Fold and trajectory tracking now share the control dispatcher and CAN sender on main,
+while retaining independent controllers and gains. See
+[main integration and motor-ID mapping](docs/main_tracking_integration.md).
+
 - Read BMI088 IMU data over SPI.
 - Print IMU and debug data through USART1.
 - Receive DBUS remote-control data.

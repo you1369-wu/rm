@@ -332,3 +332,8 @@ bool fold_mode_ready()
 {
   return fold_home_calibrated && fold_fault == FoldFault::NONE;
 }
+
+bool fold_mode_faulted()
+{
+  return fold_fault != FoldFault::NONE;
+}

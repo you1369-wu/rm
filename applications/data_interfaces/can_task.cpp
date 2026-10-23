@@ -2,10 +2,13 @@
 #include "cmsis_os.h"
 #include "io/can/can.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
+#include "tracking_mode/tracking_control/tracking_config.hpp"
 
 sp::CAN can1(&hcan1);
 sp::RM_Motor motor_a(2, sp::RM_Motors::GM6020);  // A折叠电机, 实物 CAN ID 2
 sp::RM_Motor motor_b(1, sp::RM_Motors::GM6020);  // B保持电机, 实物 CAN ID 1
+sp::RM_Motor motor_c(
+  tracking_config::kTipId, sp::RM_Motors::M2006, tracking_config::kTipRatio, true);
 
 extern "C" void can_task(void const * argument)
 {

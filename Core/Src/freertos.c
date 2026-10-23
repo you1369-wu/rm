@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "imu_task.h"
+#include "imu/imu_task.h"
 #include "data_interfaces/usart_task.h"
 #include "remote_task.h"
 #include "data_interfaces/can_task.h"
@@ -48,6 +48,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+/* 轨迹任务使用独立静态栈，保留 main 现有任务的栈和优先级。 */
+static StaticTask_t trajectory_tcb;
+static StackType_t trajectory_stack[256];
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId imutaskHandle;
@@ -60,6 +63,8 @@ osThreadId laserTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+extern void trajectory_task(void const * argument);
+static void trajectory_entry(void * argument) { trajectory_task(argument); }
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void const * argument);
@@ -150,6 +155,9 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  TaskHandle_t trajectory_handle = xTaskCreateStatic(
+    trajectory_entry, "trajectory", 256, NULL, 4, trajectory_stack, &trajectory_tcb);
+  configASSERT(trajectory_handle != NULL);
   /* USER CODE END RTOS_THREADS */
 
 }

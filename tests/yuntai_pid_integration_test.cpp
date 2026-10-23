@@ -16,6 +16,11 @@ bool remote_available = true;
 uint8_t last_frame[8] = {};
 uint32_t last_tx_id = 0U;
 unsigned send_count = 0U;
+uint8_t c_frame[8] = {};
+tracking::Telemetry test_tracking{};
+tracking::Feedback last_tracking_feedback{};
+tracking::Command test_tracking_command{};
+bool tracking_armed = false;
 
 void check(bool result, const char * message)
 {
@@ -37,23 +42,30 @@ void check_zero_commands(const char * message)
 {
   check(raw_slot(0) == 0 && raw_slot(1) == 0 &&
           motor_a_data.given_torque == 0.0f && motor_b_data.given_torque == 0.0f &&
-          motor_a_gravity_compensation_torque_nm == 0.0f,
+          motor_a_gravity_compensation_torque_nm == 0.0f &&
+          motor_c_data.given_torque == 0.0f && c_frame[4] == 0 && c_frame[5] == 0,
         message);
 }
 
-void refresh_feedback()
+void refresh_feedback(bool include_c = true)
 {
   uint8_t frame[8] = {0x0F, 0xFF, 0, 0, 0, 0, 25, 0};
   motor_a.read(frame, now_ms);
   motor_b.read(frame, now_ms);
+  if (include_c) motor_c.read(frame, now_ms);
   motor_a.angle = 2.0f;
   motor_b.angle = 1.0f;
+  motor_c.angle = -0.3f;
 }
 
 void prepare()
 {
   now_ms = 0U;
   control_mode = ControlMode::DISABLED;
+  automatic_request = stop_latched = false;
+  test_tracking = {};
+  test_tracking_command = {};
+  tracking_armed = true;
   refresh_feedback();
   remote_available = true;
   remote_input = {};
@@ -85,7 +97,7 @@ void angle_control_tick(float target_angle_a, float target_angle_b)
   run_motor_angle_control(target_angle_a, target_angle_b);
   check(send_count == before, "angle control only calculates commands");
   send_motor_commands();
-  check(send_count == before + 1U, "shared sender emits exactly one frame");
+  check(send_count == before + 2U, "shared sender emits one frame per command ID");
 }
 
 void fold_tick(uint16_t distance_cm, uint32_t tick_ms)
@@ -94,7 +106,7 @@ void fold_tick(uint16_t distance_cm, uint32_t tick_ms)
   run_yuntai_fold(distance_cm, tick_ms);
   check(send_count == before, "fold control and fault paths never send CAN directly");
   send_motor_commands();
-  check(send_count == before + 1U, "fold commands use the shared sender");
+  check(send_count == before + 2U, "fold commands use the shared two-ID sender");
 }
 
 void control_tick()
@@ -104,7 +116,7 @@ void control_tick()
     control_task(nullptr);
   }
   catch (const EndControlTick &) {
-    check(send_count == before + 1U, "each control period sends exactly one frame");
+    check(send_count == before + 2U, "each period sends GM6020 and M2006 frames once");
     return;
   }
   check(false, "control task must reach its periodic delay");
@@ -127,6 +139,45 @@ extern "C" bool remote_task_get_data(RemoteTaskData * data)
   return remote_available;
 }
 
+extern "C" bool imu_task_get_data(ImuTaskData * data)
+{
+  *data = {};
+  data->euler.pitch_rad = 0.2f;
+  data->pitch_rate_rad_s = 0.3f;
+  data->stamp_ms = now_ms;
+  return true;
+}
+
+// Dispatcher tests isolate routing; the actual tracking controller has separate tests.
+namespace tracking
+{
+Telemetry read_telemetry() { return test_tracking; }
+Command update(bool requested, bool down, bool online, const Feedback & f, uint32_t, uint32_t)
+{
+  last_tracking_feedback = f;
+  if (!online && test_tracking.state != State::Disabled && test_tracking.state != State::Fault)
+    test_tracking.fault = Fault::RemoteLost;
+  if (!requested) {
+    if (down) {
+      tracking_armed = true;
+      test_tracking.fault = Fault::None;
+    }
+    test_tracking.state = test_tracking.fault == Fault::None ? State::Disabled : State::Fault;
+    return {};
+  }
+  if (test_tracking.fault == Fault::None) {
+    if (!tracking_armed) test_tracking.fault = Fault::NotArmed;
+    else if (!f.motors_alive) test_tracking.fault = Fault::FeedbackLost;
+    else if (!std::isfinite(f.angle_a) || !std::isfinite(f.angle_b) ||
+             !std::isfinite(f.angle_c) || !std::isfinite(f.speed_a) ||
+             !std::isfinite(f.speed_b) || !std::isfinite(f.speed_c))
+      test_tracking.fault = Fault::NonFinite;
+  }
+  test_tracking.state = test_tracking.fault == Fault::None ? State::WaitImu : State::Fault;
+  return test_tracking.fault == Fault::None ? test_tracking_command : Command{};
+}
+}  // namespace tracking
+
 namespace sp
 {
 CAN::CAN(CAN_HandleTypeDef * hcan) : hcan_(hcan)
@@ -138,8 +189,16 @@ void CAN::start() {}
 void CAN::recv(uint32_t) {}
 void CAN::send(uint32_t tx_id)
 {
-  std::copy(tx_data, tx_data + CAN_DATA_LEN, last_frame);
-  last_tx_id = tx_id;
+  if (tx_id == motor_a.tx_id) {
+    std::copy(tx_data, tx_data + CAN_DATA_LEN, last_frame);
+    last_tx_id = tx_id;
+  }
+  else {
+    check(tx_id == motor_c.tx_id, "only the M2006 command group is sent separately");
+    std::copy(tx_data, tx_data + CAN_DATA_LEN, c_frame);
+    check(tx_data[0] == 0 && tx_data[1] == 0 && tx_data[2] == 0 && tx_data[3] == 0 &&
+          tx_data[6] == 0 && tx_data[7] == 0, "unused M2006 slots remain zero");
+  }
   ++send_count;
 }
 }  // namespace sp
@@ -224,7 +283,7 @@ int main()
           near(motor_a_data.given_torque, motor_a_pid_speed.out + expected_gravity),
         "A adds actual-angle gravity compensation to the speed PID output");
   check(near(motor_b_data.given_torque, motor_b_pid_speed.out), "B remains PID-only");
-  check(last_tx_id == 0x1FE && send_count == 1U, "both commands use one current-control frame");
+  check(last_tx_id == 0x1FE && send_count == 2U, "GM6020 share a frame; M2006 has its own");
   check(raw_slot(1) == static_cast<int16_t>(motor_a_data.given_torque * 16384.0f / 2.223f) &&
           raw_slot(0) == static_cast<int16_t>(motor_b_data.given_torque * 16384.0f / 2.223f),
         "real RM_Motor cmd/write pack folding A into ID 2 and holding B into ID 1");
@@ -325,8 +384,8 @@ int main()
   remote_input.sw_l = REMOTE_SWITCH_UP;
   control_tick();
   check(control_mode == ControlMode::TRACKING && !fold_control_initialized,
-        "both switches UP select the reserved TRACKING state, not folding");
-  check_zero_commands("unimplemented TRACKING always sends zero torque");
+        "both switches UP enter TRACKING, not folding");
+  check_zero_commands("tracking starts without retaining folding torque");
 
   // Sentinels verify that staying in TRACKING does not run folding housekeeping.
   fold_control_initialized = true;
@@ -419,7 +478,8 @@ int main()
   control_tick();
   check(fold_fault == FoldFault::FOLD_TIMEOUT,
         "switching to TRACKING cannot clear a latched folding fault");
-  check_zero_commands("reserved TRACKING remains disabled after a folding fault");
+  check(control_mode == ControlMode::DISABLED, "fold fault also blocks real TRACKING");
+  check_zero_commands("TRACKING remains disabled after a folding fault");
   remote_input.sw_r = REMOTE_SWITCH_MID;
   control_tick();
   check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::FOLD_TIMEOUT,
@@ -462,6 +522,74 @@ int main()
   check(fold_home_calibrated, "shared disable retains the captured home calibration");
   send_motor_commands();
   check_zero_commands("shared disable uses the common zero-torque frame");
+
+  prepare();
+  remote_input.sw_r = remote_input.sw_l = REMOTE_SWITCH_UP;
+  test_tracking_command = {0.06f, -0.04f, 0.03f};
+  control_tick();
+  check(control_mode == ControlMode::TRACKING, "tracking request enters its mode branch");
+  check(near(last_tracking_feedback.angle_a, motor_b.angle) &&
+        near(last_tracking_feedback.angle_b, motor_a.angle) &&
+        near(last_tracking_feedback.angle_c, motor_c.angle), "tracking feedback follows IDs 1/2/3");
+  check(near(last_tracking_feedback.pitch, 0.2f) && near(last_tracking_feedback.pitch_rate, 0.3f),
+        "tracking receives corrected IMU pose and pitch rate");
+  check(near(motor_b_data.given_torque, 0.06f) && near(motor_a_data.given_torque, -0.04f) &&
+        near(motor_c_data.given_torque, 0.03f), "tracking commands map back to physical IDs");
+  check(raw_slot(0) > 0 && raw_slot(1) < 0 &&
+        static_cast<int16_t>((c_frame[4] << 8) | c_frame[5]) > 0,
+        "tracking yaw/arm/tip occupy the correct separate CAN slots");
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && test_tracking.state == tracking::State::Disabled &&
+        motor_c_data.given_torque == 0, "leaving TRACKING resets it and zeros C before FOLD");
+
+  prepare();
+  motor_c.speed = NAN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::FOLD, "bad C feedback cannot block original folding");
+
+  prepare();
+  remote_input.sw_r = remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  now_ms = 100U;
+  refresh_feedback(false);
+  control_tick();
+  check(control_mode == ControlMode::DISABLED &&
+        test_tracking.fault == tracking::Fault::FeedbackLost, "tracking latches loss of C");
+  check_zero_commands("tracking loss disables all three motors in the same period");
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED, "switching to FOLD cannot bypass tracking fault");
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(test_tracking.fault == tracking::Fault::None, "DOWN acknowledges tracking faults");
+
+  prepare();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  gimbal_tracking_request_start();
+  control_tick();
+  check(control_mode == ControlMode::TRACKING, "program request takes over from MID folding");
+  gimbal_tracking_request_stop();
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && stop_latched, "program stop is latched");
+  check_zero_commands("program stop clears all motor commands");
+  remote_input.sw_r = remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED, "switches cannot bypass latched program stop");
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::TRACKING, "DOWN rearms after a program stop");
+
+  prepare();
+  tracking_armed = false;
+  remote_input.sw_r = remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED &&
+        test_tracking.fault == tracking::Fault::NotArmed, "startup UP cannot bypass DOWN arming");
+  check_zero_commands("unarmed tracking remains zero torque");
 
   std::cout << "PASS: mapped PID gains, startup calibration, gravity sum, torque cap, CAN slots, "
                "travel limits, disable priorities, fault paths, folding sequence and mode transitions\n";

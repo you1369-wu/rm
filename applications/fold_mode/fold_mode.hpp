@@ -13,6 +13,8 @@ void update_fold_mode(
 
 // 仅查询开机标定和折叠故障，公共遥控器及反馈检查由 control_task 负责。
 bool fold_mode_ready();
+// 独立查询锁存故障，避免未完成折叠标定被误当作故障而阻止循迹。
+bool fold_mode_faulted();
 
 // 公共失能入口调用；清理折叠 PID 和补偿输出，不清除本次上电标定。
 void clear_fold_controllers();

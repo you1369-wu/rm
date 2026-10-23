@@ -47,7 +47,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    applications/imu_task.cpp
+    applications/imu/imu_task.cpp
+    applications/imu/imu_support.cpp
     applications/data_interfaces/usart_task.cpp
     applications/remote_task.cpp
     applications/laser_task.cpp
@@ -55,6 +56,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/data_interfaces/can_task.cpp
     applications/control_task.cpp
     applications/fold_mode/fold_mode.cpp
+    applications/tracking_mode/tracking_control/tracking_controller.cpp
+    applications/tracking_mode/tracking_control/tracking_mode.cpp
+    applications/tracking_mode/tracking_generation/trajectory_task.cpp
     applications/tools/plot_task.cpp
     applications/pid_train.cpp
     applications/io/led_task.cpp
