@@ -42,7 +42,7 @@ namespace
 bool automatic_request = false, stop_latched = false;
 // 自动任务只生成模式请求，仍由本任务执行控制器并统一发送 CAN。
 mission::Controller mission_controller;
-}
+}  // namespace
 
 extern "C" void gimbal_tracking_request_start(void)
 {
@@ -61,21 +61,21 @@ extern "C" void gimbal_tracking_request_stop(void)
 
 // 顶层状态机：右下总失能；左下自动，其余保留右中折叠/双上循迹。
 static ControlMode select_control_mode(
-  const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready,
-  bool tracking_requested, mission::Request mission_request)
+  const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready, bool tracking_requested,
+  mission::Request mission_request)
 {
   // 公共安全条件优先；遥控器或电机反馈异常时，不允许任何运动模式输出。
   if (
     !remote_ready || !remote_data.is_alive || remote_data.sw_r == REMOTE_SWITCH_DOWN ||
-    !motors_ready || !std::isfinite(motor_a.angle) ||
-    !std::isfinite(motor_a.speed) || !std::isfinite(motor_b.angle) ||
-    !std::isfinite(motor_b.speed)) {
+    !motors_ready || !std::isfinite(motor_a.angle) || !std::isfinite(motor_a.speed) ||
+    !std::isfinite(motor_b.angle) || !std::isfinite(motor_b.speed)) {
     return ControlMode::DISABLED;
   }
 
   // 模式切换不清除另一模式的故障；两边均由右下档确认。
-  if (fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None ||
-      stop_latched || mission_controller.status().fault != mission::Fault::None)
+  if (
+    fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None ||
+    stop_latched || mission_controller.status().fault != mission::Fault::None)
     return ControlMode::DISABLED;
 
   if (control_source == ControlSource::AUTOMATIC) {
@@ -171,6 +171,7 @@ extern "C" void control_task(void const * argument)
                      tracking_config::kImuPitchMountOffset;
     feedback.pitch_rate = tracking_config::kImuPitchDirection * imu_data.pitch_rate_rad_s;
     feedback.roll = imu_data.euler.roll_rad;
+    feedback.yaw = imu_data.euler.yaw_rad;  // Scoring only; yaw control still uses the encoder.
     feedback.imu_stamp_ms = imu_data.stamp_ms;
     const uint32_t gap_ms = now_ms - previous_ms;
     previous_ms = now_ms;
@@ -180,7 +181,7 @@ extern "C" void control_task(void const * argument)
     const ControlSource previous_source = control_source;
     taskENTER_CRITICAL();
     control_source = automatic_selected ? ControlSource::AUTOMATIC : ControlSource::MANUAL;
-    // 自动入口不接受/排队原程序循迹请求，避免提前跳过 7 秒折叠阶段。
+    // 自动入口不接受/排队原程序循迹请求，避免提前跳过 15 秒折叠阶段。
     if (!online || down || automatic_selected) automatic_request = false;
     if (down) stop_latched = false;
     const bool auto_run = automatic_request, stopped = stop_latched;
@@ -191,27 +192,27 @@ extern "C" void control_task(void const * argument)
     mission_input.remote_online = online;
     mission_input.disable_requested = down;
     mission_input.motors_ready = motors_ready && std::isfinite(feedback.angle_a) &&
-      std::isfinite(feedback.speed_a) && std::isfinite(feedback.angle_b) &&
-      std::isfinite(feedback.speed_b);
+                                 std::isfinite(feedback.speed_a) &&
+                                 std::isfinite(feedback.angle_b) && std::isfinite(feedback.speed_b);
     mission_input.fold_ready = fold_mode_ready();
-    mission_input.control_fault = fold_mode_faulted() ||
-      tracking::read_telemetry().fault != tracking::Fault::None;
+    mission_input.control_fault =
+      fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None;
     mission_input.stop_requested = stopped;
     mission_input.now_ms = now_ms;
     mission_input.gap_ms = gap_ms;
     const auto mission_request = mission_controller.update(mission_input);
-    const bool tracking_requested = online && !down && !stopped &&
-      (automatic_selected ? mission_request == mission::Request::Tracking :
-        (auto_run || (remote_data.sw_r == REMOTE_SWITCH_UP &&
-                     remote_data.sw_l == REMOTE_SWITCH_UP)));
+    const bool tracking_requested =
+      online && !down && !stopped &&
+      (automatic_selected ? mission_request == mission::Request::Tracking
+                          : (auto_run || (remote_data.sw_r == REMOTE_SWITCH_UP &&
+                                          remote_data.sw_l == REMOTE_SWITCH_UP)));
 
-    const ControlMode next_mode =
-      select_control_mode(remote_data, remote_ready, motors_ready, tracking_requested, mission_request);
+    const ControlMode next_mode = select_control_mode(
+      remote_data, remote_ready, motors_ready, tracking_requested, mission_request);
     if (next_mode != control_mode || previous_source != control_source) {
       if (control_mode == ControlMode::TRACKING) {
         // 仍请求循迹却因反馈异常退出时，先让循迹模块记录故障，再清理其独立控制器。
-        if (tracking_requested)
-          tracking::update(true, down, online, feedback, now_ms, gap_ms);
+        if (tracking_requested) tracking::update(true, down, online, feedback, now_ms, gap_ms);
         tracking::update(false, down, online, feedback, now_ms, gap_ms);
       }
       // 仅切换模式时通知折叠模块退出；先记录失联故障，并中断尚未完成的下档标定。
@@ -219,9 +220,10 @@ extern "C" void control_task(void const * argument)
 
       // 模式切换先清理旧控制输出和积分，不能把上一模式的力矩带入下一模式。
       run_disable_mode();
-      control_mode = fold_mode_faulted() ||
-        tracking::read_telemetry().fault != tracking::Fault::None
-        ? ControlMode::DISABLED : next_mode;
+      control_mode =
+        fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None
+          ? ControlMode::DISABLED
+          : next_mode;
     }
 
     switch (control_mode) {
@@ -245,8 +247,7 @@ extern "C" void control_task(void const * argument)
 
         break;
 
-      case ControlMode::TRACKING:
-      {
+      case ControlMode::TRACKING: {
         // 循迹 PID/前馈全由 tracking_mode 自己计算，不叠加 fold_mode 的补偿。
         const auto command = tracking::update(true, down, online, feedback, now_ms, gap_ms);
         motor_b_data.given_torque = command.torque_a;  // yaw，ID 1
@@ -262,8 +263,9 @@ extern "C" void control_task(void const * argument)
     }
 
     // 模块执行后才产生的故障，也在本周期终止自动任务，不能靠切回手动绕过。
-    if (automatic_selected && !down &&
-        (fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None)) {
+    if (
+      automatic_selected && !down &&
+      (fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None)) {
       mission_controller.abort(mission::Fault::ControlFault);
       run_disable_mode();
       control_mode = ControlMode::DISABLED;

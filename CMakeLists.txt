@@ -60,6 +60,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/tracking_mode/tracking_control/tracking_controller.cpp
     applications/tracking_mode/tracking_control/tracking_mode.cpp
     applications/tracking_mode/tracking_generation/trajectory_task.cpp
+    applications/tracking_mode/tracking_score/tracking_score.cpp
+    applications/tracking_mode/tracking_score/tracking_score_task.cpp
     applications/tools/plot_task.cpp
     applications/pid_train.cpp
     applications/io/led_task.cpp

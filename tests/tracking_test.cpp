@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include "task.h"
+#include "cmsis_os.h"
 #include "tracking_mode/tracking_control/tracking_mode.hpp"
 #include "tracking_mode/tracking_generation/trajectory_runtime.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
@@ -21,12 +22,13 @@ bool resume=false,stop=false;
 struct Stop {};
 }
 TickType_t xTaskGetTickCount() { return clock_ms; }
-void vTaskDelayUntil(TickType_t *previous,TickType_t increment) {
-  *previous+=increment;
+int osDelay(uint32_t millisec) {
+  assert(millisec == TRAJECTORY_UPDATE_INTERVAL_MS);
   std::unique_lock<std::mutex> lock(gate); ++yields; cv.notify_all();
   cv.wait(lock,[]{return resume||stop;});
   if (stop) throw Stop{};
   resume=false;
+  return 0;
 }
 struct Scheduler {
   std::thread worker;
@@ -107,7 +109,7 @@ struct Rig {
   }
   void start() {
     f={}; f.angle_a=1.2f; f.angle_b=initial_b; f.angle_c=initial_c;
-    f.pitch=initial_pitch; f.motors_alive=f.imu_ready=true;
+    f.pitch=initial_pitch; f.yaw=3.13f; f.motors_alive=f.imu_ready=true;
     zero(call(false,true)); call(); assert(read_telemetry().state==State::WaitImu);
   }
   void follow() { // KINEMATIC ideal feedback, not a motor dynamics simulation.
@@ -140,8 +142,16 @@ void flow_tests(Scheduler &s) {
   auto t=read_telemetry(); assert(t.calibrated&&std::fabs(t.pitch_origin)<.01f);
   assert(near(t.arm_hold,2.3f)); assert(std::fabs(t.actual_pitch)<1e-5f);
   r.to(State::Running); assert(read_telemetry().phase_ms==0);
+  const auto run_started = read_telemetry().run_started_ms;
+  assert(run_started == clock_ms);
+  // The scoring zero is the calibrated physical zero, independent of encoder yaw control.
+  assert(near(read_telemetry().imu_yaw_origin, 3.13f));
+  r.f.yaw = -3.13f;
+  r.follow(); r.call();
+  assert(near(read_telemetry().score_actual_yaw, .0231853f * kImuYawDirection));
   for (int i=0;i<1360;++i) { r.follow(); r.call(); assert(read_telemetry().state==State::Running); }
   t=read_telemetry(); assert(t.samples>1300&&t.rms_yaw<.02f&&t.rms_pitch<.02f);
+  assert(t.run_started_ms == run_started); // Phase wrap must not restart score accumulation.
   assert(t.peak_error_yaw>=t.rms_yaw); assert(near(t.arm_hold,2.3f));
   r.expect(Fault::RemoteLost,r.call(true,false,false));
   zero(r.call()); assert(read_telemetry().fault==Fault::RemoteLost); // latched

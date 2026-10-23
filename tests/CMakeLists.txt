@@ -9,6 +9,7 @@ add_executable(tracking_test tracking_test.cpp
   ../applications/tracking_mode/tracking_generation/trajectory_task.cpp
   ../sp_middleware/motor/rm_motor/rm_motor.cpp)
 target_include_directories(tracking_test PRIVATE stubs ../applications ../sp_middleware)
+target_compile_definitions(tracking_test PRIVATE TEST_OS_DELAY_EXTERNAL=1)
 target_link_libraries(tracking_test PRIVATE Threads::Threads)
 if(MSVC)
   target_compile_options(tracking_test PRIVATE /UNDEBUG)
@@ -59,3 +60,15 @@ else()
 endif()
 add_test(NAME mission_behavior COMMAND mission_test)
 set_tests_properties(mission_behavior PROPERTIES TIMEOUT 30)
+
+add_executable(tracking_score_test tracking_score_test.cpp
+  ../applications/tracking_mode/tracking_score/tracking_score.cpp
+  ../applications/tracking_mode/tracking_score/tracking_score_task.cpp)
+target_include_directories(tracking_score_test PRIVATE stubs ../applications)
+if(MSVC)
+  target_compile_options(tracking_score_test PRIVATE /UNDEBUG)
+else()
+  target_compile_options(tracking_score_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+endif()
+add_test(NAME tracking_score_behavior COMMAND tracking_score_test)
+set_tests_properties(tracking_score_behavior PROPERTIES TIMEOUT 30)

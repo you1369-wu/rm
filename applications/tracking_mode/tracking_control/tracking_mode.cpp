@@ -101,6 +101,7 @@ void enter(State state, uint32_t now)
 {
   t.state = state;
   stage_ms = now;
+  if (state == State::Running) t.run_started_ms = now;
   settling = false;
 }
 bool settled(bool close, uint32_t now)
@@ -118,6 +119,8 @@ bool settled(bool close, uint32_t now)
 void measure(const Feedback & f)
 {
   t.actual_yaw = kYawDirection * (f.angle_a - t.yaw_origin);
+  // IMU yaw wraps at +/-pi; limited yaw travel stays within one turn of this zero.
+  t.score_actual_yaw = kImuYawDirection * std::remainder(f.yaw - t.imu_yaw_origin, 6.28318530718f);
   t.actual_pitch = f.pitch - t.pitch_origin;
   t.imu_pitch = f.pitch;
   t.arm_error = kArmDirection * (t.arm_hold - f.angle_b);
@@ -258,6 +261,7 @@ Command update(
       t.pitch_origin = f.pitch;
       t.tip_origin = f.angle_c;
       t.yaw_origin = f.angle_a;
+      t.imu_yaw_origin = f.yaw;  // Same physical zero as the relative yaw trajectory.
       t.arm_at_origin = f.angle_b;
       t.calibrated = true;
       measure(f);

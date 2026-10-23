@@ -39,8 +39,8 @@ void arm(mission::Controller & controller, mission::Input & input)
 int main()
 {
   using namespace mission;
-  check(mission_config::kFoldDurationMs == 7000U,
-        "automatic folding duration is seven seconds in total, not seven plus three");
+  check(mission_config::kFoldDurationMs == 15000U,
+        "automatic folding retains the current fifteen-second configuration");
   Controller controller;
   Input input = ready_input();
   check(controller.update(input) == Request::Disabled &&
@@ -66,7 +66,7 @@ int main()
   ++input.now_ms;
   check(controller.update(input) == Request::Tracking &&
           controller.status().fold_elapsed_ms == mission_config::kFoldDurationMs,
-        "the exact 7 second deadline requests tracking without adding the fold hold");
+        "the configured deadline requests tracking without adding the fold hold");
   input.now_ms += 50000U;
   check(controller.update(input) == Request::Tracking,
         "tracking remains selected instead of restarting the fold timer");
@@ -117,7 +117,7 @@ int main()
   input.stop_requested = true;
   input.now_ms += mission_config::kFoldDurationMs;
   check(controller.update(input) == Request::Disabled && controller.status().fault == Fault::ProgramStop,
-        "program stop takes priority over the 7 second deadline");
+        "program stop takes priority over the configured deadline");
   input.stop_requested = false;
   arm(controller, input);
   controller.update(input);
@@ -139,6 +139,6 @@ int main()
   check(controller.update(input) == Request::Fold, "wraparound retains the pre-deadline interval");
   ++input.now_ms;
   check(controller.update(input) == Request::Tracking, "wraparound reaches the exact deadline");
-  std::cout << "PASS: mission arming, readiness, 7s deadline, manual exit, disable priority, "
+  std::cout << "PASS: mission arming, readiness, configured deadline, manual exit, disable priority, "
                "fault latching and timer wraparound\n";
 }

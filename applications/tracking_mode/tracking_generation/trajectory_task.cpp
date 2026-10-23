@@ -2,6 +2,7 @@
 #include "trajectory_runtime.hpp"
 
 #include "FreeRTOS.h"
+#include "cmsis_os.h"
 #include "task.h"
 
 namespace
@@ -789,7 +790,6 @@ extern "C" void trajectory_task(void const * argument)
 {
   (void)argument;
   TickType_t previous_tick = xTaskGetTickCount();
-  TickType_t wake_tick = previous_tick;
   uint32_t phase_ms = 0U;
   bool was_running = false;
   for (;;) {
@@ -807,9 +807,7 @@ extern "C" void trajectory_task(void const * argument)
     taskENTER_CRITICAL();
     if (requested_running == running) publish(point, phase_ms, running);
     taskEXIT_CRITICAL();
-    if (xTaskGetTickCount() - wake_tick >= pdMS_TO_TICKS(TRAJECTORY_UPDATE_INTERVAL_MS))
-      wake_tick = xTaskGetTickCount();
-    vTaskDelayUntil(&wake_tick, pdMS_TO_TICKS(TRAJECTORY_UPDATE_INTERVAL_MS));
+    osDelay(TRAJECTORY_UPDATE_INTERVAL_MS);
   }
 }
 

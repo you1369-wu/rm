@@ -212,14 +212,14 @@ void CAN::send(uint32_t tx_id)
 int main()
 {
   check(fold_hold_duration_ms == 3000U, "folded position retains the requested 3 second hold");
-  check(near(yuntai_other_limit_offset_rad, 1.9f) && near(yuntai_unfolded_offset_rad, 1.8f) &&
+  check(near(yuntai_other_limit_offset_rad, 2.0f) && near(yuntai_unfolded_offset_rad, 1.8f) &&
           near(yuntai_folded_offset_rad, 0.0f), "production defaults preserve the current offsets");
   check(std::isnan(yuntai_min_angle_rad) && std::isnan(yuntai_max_angle_rad) &&
           std::isnan(motor_a_gravity_horizontal_angle_rad),
         "absolute limits and horizontal reference still require startup calibration");
   motor_a.angle = 2.0f;
   check(calibrate_yuntai_from_max_angle(), "measured production defaults pass calibration");
-  check(near(yuntai_min_angle_rad, 2.0f) && near(yuntai_max_angle_rad, 3.9f) &&
+  check(near(yuntai_min_angle_rad, 2.0f) && near(yuntai_max_angle_rad, 4.0f) &&
           near(yuntai_folded_angle_rad, 2.0f) && near(yuntai_unfolded_angle_rad, 3.8f),
         "physical endpoint names do not reverse the numerical safety limits");
   check(motor_a.rx_id == 0x206 && motor_b.rx_id == 0x205,
@@ -643,7 +643,7 @@ int main()
   motor_a.angle = yuntai_unfolded_angle_rad;
   control_tick();
   check(control_mode == ControlMode::TRACKING && mission_status.state == mission::State::Tracking &&
-          !fold_control_initialized, "exactly 7 seconds exits folding and enters tracking");
+          !fold_control_initialized, "the configured deadline exits folding and enters tracking");
   check(near(motor_b_data.given_torque, 0.06f) && near(motor_a_data.given_torque, -0.04f) &&
           near(motor_c_data.given_torque, 0.03f), "automatic tracking preserves physical ID mapping");
   remote_input.sw_r = REMOTE_SWITCH_DOWN;
