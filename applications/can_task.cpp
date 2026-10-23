@@ -8,7 +8,7 @@ sp::CAN can1(&hcan1);
 sp::RM_Motor motor_a(tracking_config::kYawId, sp::RM_Motors::GM6020);  // A电机, CAN ID 1
 sp::RM_Motor motor_b(tracking_config::kArmId, sp::RM_Motors::GM6020);  // B电机, CAN ID 2
 
-sp::RM_Motor motor_c(tracking_config::kTipId, sp::RM_Motors::M2006, sp::M2006_P36, true);
+sp::RM_Motor motor_c(tracking_config::kTipId, sp::RM_Motors::M2006, tracking_config::kTipRatio, true);
 
 extern "C" void can_task(void const * argument)
 {

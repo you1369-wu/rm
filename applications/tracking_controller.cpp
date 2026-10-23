@@ -1,56 +1,45 @@
 #include "tracking_controller.hpp"
-
 #include <algorithm>
 #include <cmath>
-
-namespace tracking
-{
-bool finite(Reference r)
-{
-  return std::isfinite(r.position) && std::isfinite(r.velocity) && std::isfinite(r.acceleration);
+namespace tracking {
+bool finite(Reference r) {
+  return std::isfinite(r.position)&&std::isfinite(r.velocity)&&std::isfinite(r.acceleration);
 }
-
-AxisOutput AxisController::step(Reference r, float position, float velocity, float dt)
-{
-  if (
-    !finite(r) || !std::isfinite(position) || !std::isfinite(velocity) || !std::isfinite(dt) ||
-    dt <= 0.0f || dt > 0.005f) {
-    reset();
-    return {};
-  }
+void AxisController::reset() {
+  integral_=previous_speed_=filtered_acceleration_=0; derivative_ready_=false;
+}
+AxisOutput AxisController::step(Reference r,float position,float velocity,float dt,float speed_limit) {
+  if (!finite(r)||!std::isfinite(position)||!std::isfinite(velocity)||
+      !std::isfinite(dt)||dt<=0||dt>.005f) { reset(); return {}; }
   AxisOutput out;
-  // 有限行程轴使用连续坐标差，不能把跨越机械限位的运动折算成“最短角”。
-  out.error = r.position - position;
-  const float speed_raw = gains_.angle_kp * out.error + gains_.velocity_ff * r.velocity;
-  out.speed_command = std::clamp(speed_raw, -gains_.max_speed, gains_.max_speed);
-  const float speed_error = out.speed_command - velocity;
-  const float feedforward =
-    gains_.acceleration_ff * r.acceleration + gains_.gravity_ff * std::cos(position);
-  const float base = gains_.speed_kp * speed_error + feedforward;
-  const float candidate = std::clamp(
-    integral_ + gains_.speed_ki * speed_error * dt, -gains_.max_integral, gains_.max_integral);
-  const float candidate_output = base + candidate;
-  // 条件积分：饱和时拒绝加深饱和的增量，允许积分向解除饱和方向回退。
-  const float increment = candidate - integral_;
-  if (!((candidate_output > gains_.max_torque && increment > 0.0f) ||
-        (candidate_output < -gains_.max_torque && increment < 0.0f))) {
-    integral_ = candidate;
-  }
-  const float raw = base + integral_;
-  out.torque = std::clamp(raw, -gains_.max_torque, gains_.max_torque);
-  out.saturated = speed_raw != out.speed_command || raw != out.torque;
+  out.error=r.position-position; // finite travel: do not wrap across mechanical stops
+  const float limit=speed_limit>0?std::min(speed_limit,gains_.max_speed):gains_.max_speed;
+  const float raw_speed=gains_.angle_kp*out.error+gains_.velocity_ff*r.velocity;
+  out.speed_command=std::clamp(raw_speed,-limit,limit);
+  // PDF: differentiate the limited speed-loop SETPOINT, not measured velocity.
+  const float acceleration=derivative_ready_?(out.speed_command-previous_speed_)/dt:0;
+  previous_speed_=out.speed_command; derivative_ready_=true;
+  const float limited=std::clamp(acceleration,-gains_.max_acceleration,gains_.max_acceleration);
+  filtered_acceleration_+=dt/(gains_.acceleration_filter_s+dt)*(limited-filtered_acceleration_);
+  out.acceleration_command=filtered_acceleration_;
+  out.feedforward_torque=gains_.inertia_ff*filtered_acceleration_+
+    gains_.damping_ff*out.speed_command+gains_.gravity_ff*std::cos(position);
+  const float error=out.speed_command-velocity, p=gains_.speed_kp*error;
+  const float candidate=std::clamp(integral_+gains_.speed_ki*error*dt,
+                                 -gains_.max_integral,gains_.max_integral);
+  const float trial=p+candidate+out.feedforward_torque, increment=candidate-integral_;
+  if (!((trial>gains_.max_torque&&increment>0)||(trial<-gains_.max_torque&&increment<0)))
+    integral_=candidate;
+  out.pid_torque=p+integral_;
+  const float raw=out.pid_torque+out.feedforward_torque;
+  out.torque=std::clamp(raw,-gains_.max_torque,gains_.max_torque);
+  out.saturated=raw_speed!=out.speed_command||raw!=out.torque;
   return out;
 }
-
-Reference approach(float start, float end, float elapsed_s, float duration_s)
-{
-  const float s = std::clamp(elapsed_s / duration_s, 0.0f, 1.0f);
-  const float s2 = s * s, s3 = s2 * s;
-  const float delta = end - start;
-  // 五次多项式，起终点速度、加速度均为零。
-  return {
-    start + delta * (10.0f * s3 - 15.0f * s3 * s + 6.0f * s3 * s2),
-    delta * (30.0f * s2 - 60.0f * s3 + 30.0f * s2 * s2) / duration_s,
-    delta * (60.0f * s - 180.0f * s2 + 120.0f * s3) / (duration_s * duration_s)};
+Reference approach(float start,float end,float elapsed_s,float duration_s) {
+  if (duration_s<=0) return {end,0,0};
+  const float s=std::clamp(elapsed_s/duration_s,0.0f,1.0f), s2=s*s, s3=s2*s, d=end-start;
+  return {start+d*(10*s3-15*s3*s+6*s3*s2),d*(30*s2-60*s3+30*s2*s2)/duration_s,
+          d*(60*s-180*s2+120*s3)/(duration_s*duration_s)};
 }
-}  // namespace tracking
+}

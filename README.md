@@ -1,142 +1,21 @@
-# rm_imu
+# 三电机云台：IMU 调平后轨迹跟踪
 
-## Trajectory tracking branch
+本版本按 2026-10-22 的最终需求重写控制流程：A=GM6020 ID1（yaw），B=GM6020 ID2（大 pitch 保持），C=M2006 ID3（36:1 减速箱，小 pitch）；C 板 IMU 随 C 电机末端运动。
 
-This branch adds dual-axis trajectory tracking (motor A = yaw, motor B = pitch).
-See [接入、遥控操作、控制器整定与绘图通道说明](docs/trajectory_tracking.md).
-Use right switch DOWN to arm/reset, then both switches UP to start.
-Confirm encoder zero, direction and mechanical travel in
-`applications/tracking_config.hpp` before hardware operation.
+完整流程：保持 B 进入时的位置 → 等待 IMU 稳定 → C 调平到 pitch≈0 → 标定轨迹零点 → 平滑靠近轨迹首点 → A/C 循环跟踪附件轨迹。
 
-RoboMaster C board firmware project for IMU, remote control, CAN motor control,
-PID training, LED, buzzer, and serial plotting tasks.
-
-The project targets STM32F407 and is generated from STM32CubeMX, then extended
-with C/C++ application code and the `sp_middleware` submodule.
-
-## Features
-
-- Read BMI088 IMU data over SPI.
-- Print IMU and debug data through USART1.
-- Receive DBUS remote-control data.
-- Control RoboMaster motors over CAN.
-- Run PID training and plotting tasks.
-- Drive board LED and buzzer feedback.
-
-## Project Layout
-
-```text
-applications/          User application tasks and C++ control logic
-Core/                  STM32CubeMX generated core files
-Drivers/               STM32 HAL and CMSIS files
-Middlewares/           FreeRTOS and STM32 middleware files
-cmake/                 CMake toolchain and CubeMX CMake files
-sp_middleware/         Shared middleware submodule
-CMakeLists.txt         Top-level build target and source list
-CMakePresets.json      Debug and Release CMake presets
-rm_imu.ioc             STM32CubeMX project file
-```
-
-## Environment
-
-Recommended tools:
-
-- STM32CubeMX / STM32CubeCLT or STM32Cube VS Code extension
-- CMake 3.22 or newer
-- Ninja
-- GNU Arm Embedded Toolchain, usually installed by STM32Cube
-- Git with submodule support
-
-## First Setup
-
-Clone the repository with submodules:
-
-```powershell
-git clone --recursive https://github.com/you1369-wu/rm.git
-cd rm
-```
-
-If the repository has already been cloned, initialize the middleware submodule:
-
-```powershell
-git submodule update --init --recursive
-```
-
-This step is required because files such as
-`sp_middleware/io/bmi088/bmi088.cpp` are not stored directly in this repository.
-
-## Build
-
-Configure and build with the Debug preset:
+- [操作、参数、前一阶段接入、绘图通道与调试说明](docs/trajectory_tracking.md)
+- [软件验证记录及实机边界](docs/validation.md)
+- 集中参数：`applications/tracking_config.hpp`
+- 主控制状态机：`applications/tracking_mode.cpp`
+- 前一阶段启动接口：`applications/tracking_request.h`
+- 串口采集及绘图：`tools/capture_tracking.py`、`tools/plot_tracking.py`
 
 ```powershell
 cmake --preset Debug
-cmake --build build/Debug
+cmake --build --preset Debug
 ```
 
-Or build from VS Code with the STM32/CMake extension using the `Debug` preset.
+源码包包含 HAL、FreeRTOS 和 sp_middleware，不需要在线拉取子模块。使用已有 STM32CubeCLT 的 ARM GCC、CMake、Ninja，确保三者在 PATH。旧两轴逻辑和旧说明中的“B 跟踪 pitch / 固定 0.2 rad”均不适用于本版本。
 
-Release build:
-
-```powershell
-cmake --preset Release
-cmake --build build/Release
-```
-
-Do not commit `build/`; regenerate build files locally when needed.
-
-## CubeMX Resources
-
-- SPI1: BMI088 communication bus.
-- PA4: accelerometer chip select, GPIO output, default high.
-- PB0: gyroscope chip select, GPIO output, default high.
-- USART1: serial output, 115200-8-N-1.
-- PB6: USART1_TX.
-- PB7: USART1_RX.
-- TIM10_CH1 / PF6: optional BMI088 heater PWM.
-
-## Development Notes
-
-- BMI088 chip-select pins are active low.
-- Keep the SPI baud rate below 10 MHz. With PCLK2 at 84 MHz, SPI prescaler 16
-  gives 5.25 MHz.
-- When adding new `.c` or `.cpp` files, add them to `target_sources()` in
-  `CMakeLists.txt`.
-- Keep application headers under `applications/` or another included path.
-- Keep shared drivers and reusable code in `sp_middleware` when they are meant
-  to be reused across projects.
-
-## Troubleshooting
-
-### CMake cannot find `sp_middleware` source files
-
-Run:
-
-```powershell
-git submodule update --init --recursive
-```
-
-If the submodule URL was changed, also run:
-
-```powershell
-git submodule sync --recursive
-git submodule update --init --recursive
-```
-
-### Build fails with missing `cc1.exe`
-
-If the compiler prints an error like:
-
-```text
-fatal error: cannot execute .../cc1.exe: CreateProcess: No such file or directory
-```
-
-the STM32Cube GNU toolchain installation is incomplete or damaged. Reinstall the
-GNU Tools for STM32 package from STM32Cube, or delete the damaged toolchain
-folder under:
-
-```text
-C:\Users\<user>\AppData\Local\stm32cube\bundles\gnu-tools-for-stm32\
-```
-
-Then reopen VS Code or STM32Cube and let the toolchain download again.
+已完成本地编译和主机行为测试，尚未连接、烧录或调试你的实物。首次使用先按说明核对 IMU 安装零偏、C 电机方向及机械行程，再调整 PID/前馈。

@@ -2,12 +2,12 @@ cmake_minimum_required(VERSION 3.22)
 project(tracking_host_tests LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-add_executable(tracking_test
-  tracking_test.cpp
-  ../applications/tracking_controller.cpp
-  ../applications/tracking_mode.cpp
-  ../applications/trajectory_task.cpp)
-target_include_directories(tracking_test PRIVATE stubs ../applications)
+find_package(Threads REQUIRED)
+add_executable(tracking_test tracking_test.cpp
+  ../applications/tracking_controller.cpp ../applications/tracking_mode.cpp
+  ../applications/trajectory_task.cpp ../sp_middleware/motor/rm_motor/rm_motor.cpp)
+target_include_directories(tracking_test PRIVATE stubs ../applications ../sp_middleware)
+target_link_libraries(tracking_test PRIVATE Threads::Threads)
 if(MSVC)
   target_compile_options(tracking_test PRIVATE /UNDEBUG)
 else()
@@ -15,3 +15,4 @@ else()
 endif()
 enable_testing()
 add_test(NAME tracking_behavior COMMAND tracking_test)
+set_tests_properties(tracking_behavior PROPERTIES TIMEOUT 30)

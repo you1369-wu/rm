@@ -1,66 +1,45 @@
 #pragma once
-
 #include <cstdint>
-
 namespace tracking_config
 {
-// 固定映射：A=底部yaw，B=大臂pitch，C=顶部M2006。
-// ID 暂定，烧录前改成实物值；GM6020 使用电流模式。
+// A=yaw GM6020 ID1, B=big pitch GM6020 ID2, C=small pitch M2006 ID3.
 constexpr uint8_t kYawId = 1, kArmId = 2, kTipId = 3;
-constexpr float kTipDirection = 1.0f;
-constexpr float kArmHold = 0.0f;  // 相对上电位置，0表示保持上电姿态
-constexpr float kArmMin = -0.30f, kArmMax = 0.30f;
-constexpr float kTipMin = -0.90f, kTipMax = 0.90f;
-// 三轴在线且静止1秒后自动捕获零点；不是绝对水平标定。
-constexpr uint32_t kCalibrationDurationMs = 1000;
-constexpr float kCalibrationSpeed = 0.05f;
-constexpr float kCalibrationMotion = 0.01f;
-static_assert(
-  kYawId >= 1 && kYawId <= 7 && kArmId >= 1 && kArmId <= 7 && kTipId >= 1 && kTipId <= 8 &&
-    kYawId != kArmId,
-  "Invalid motor IDs");
-static_assert(
-  0x204 + kYawId != 0x200 + kTipId && 0x204 + kArmId != 0x200 + kTipId,
-  "CAN feedback ID collision");
-constexpr float kYawDirection = 1.0f;  // 只能为 +1 或 -1
-constexpr float kPitchDirection = 1.0f;
-constexpr float kYawMin = -0.45f;  // 轨迹坐标系下的软件行程，须按机械结构修改
-constexpr float kYawMax = 0.45f;
-constexpr float kPitchMin = -0.60f;
-constexpr float kPitchMax = 0.60f;
-
+constexpr float kTipRatio = 36.0f;  // output-shaft rad, rad/s, N*m
+constexpr float kYawDirection = -1, kArmDirection = 1, kTipDirection = -1;
+// Positive C torque must increase corrected IMU pitch. Verify installation.
+constexpr float kImuPitchDirection = 1, kImuPitchMountOffset = 0;
+constexpr uint32_t kControlPeriodMs = 1, kMaxControlGapMs = 5;
+constexpr uint32_t kImuTimeoutMs = 10, kReferenceTimeoutMs = 10;
+constexpr uint32_t kImuWarmupMs = 500, kWaitImuTimeoutMs = 5000;
+constexpr uint32_t kLevelDurationMs = 2000, kLevelTimeoutMs = 10000;
+constexpr uint32_t kAlignDurationMs = 2000, kAlignTimeoutMs = 100000;
+constexpr uint32_t kSettleDurationMs = 300, kErrorDurationMs = 200;
+constexpr float kLevelTolerance = 0.06f, kSettleError = 0.03f, kSettleSpeed = 0.08f;
+constexpr float kLevelMaxSpeed = 0.5f;
+constexpr float kYawMin = -2.0f, kYawMax = 2.0f, kPitchMin = -1.0f, kPitchMax = 1.0f;
+constexpr float kTipMin = -2.0f, kTipMax = 2.0f;  // from leveled C encoder origin
+constexpr float kMaxLevelTravel = 2.5f;           // C travel from entry, before leveling
+constexpr float kMaxAbsolutePitch = 2.0f, kMaxRoll = 3.5f;
+constexpr float kMaxArmDrift = 0.10f, kMaxTrackingError = 0.35f;
+constexpr uint32_t kPlotPeriodMs = 10;
+constexpr unsigned kPlotPage = 0;  // 0=assessment, 1=feedforward diagnostics
 struct AxisGains
 {
-  float angle_kp;  // 角度 P 环，输出 rad/s
-  float speed_kp;  // 速度 PI 环，输出 N*m
-  float speed_ki;
-  float velocity_ff;      // 速度前馈，无量纲
-  float acceleration_ff;  // 惯量前馈，N*m/(rad/s^2)
-  float gravity_ff;       // 水平为零时：N*m*cos(q)，符号由实机确认
-  float max_speed;
-  float max_torque;
-  float max_integral;
+  float angle_kp, speed_kp, speed_ki, velocity_ff;
+  float inertia_ff;  // J, kg*m^2, output-axis equivalent inertia
+  float damping_ff;  // b, N*m*s/rad
+  float gravity_ff;  // N*m*cos(physical angle); identify before enabling
+  float max_speed, max_torque, max_integral;
+  float acceleration_filter_s, max_acceleration;
 };
-// 起调参数，非实机最优值。沿用原工程速度 Kp=0.035、力矩上限0.3。
-// 表格峰值速度约7.15/8.31 rad/s，原工程5 rad/s上限不足。
-constexpr AxisGains kYaw{5.0f, 0.035f, 0.0f, 1.0f, 0.0f, 0.0f, 10.0f, 0.30f, 0.10f};
-constexpr AxisGains kArm{5.0f, 0.035f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.30f, 0.10f};
-constexpr AxisGains kTip{5.0f, 0.035f, 0.0f, 1.0f, 0.0f, 0.0f, 10.0f, 0.20f, 0.08f};
-static_assert(kTipDirection * kTipDirection == 1.0f, "Invalid tip direction");
-static_assert(kArmHold >= kArmMin && kArmHold <= kArmMax, "Arm hold outside limits");
-constexpr uint32_t kControlPeriodMs = 1;
-constexpr uint32_t kMaxControlGapMs = 5;
-constexpr uint32_t kReferenceTimeoutMs = 10;
-constexpr uint32_t kAlignDurationMs = 2000;
-constexpr uint32_t kAlignTimeoutMs = 6000;
-constexpr uint32_t kSettleDurationMs = 200;
-constexpr float kSettleError = 0.03f;
-constexpr float kSettleSpeed = 0.15f;
-constexpr float kMaxTrackingError = 0.35f;
-constexpr uint32_t kErrorDurationMs = 200;
-constexpr uint32_t kPlotPeriodMs = 10;  // 18通道=75字节，100Hz时约7500B/s
+// Starting values only. Motor IDs cannot determine inertia/damping/gravity.
+constexpr AxisGains kYaw{5, 0.15f, 0.12f, 1, 0, 0, 0, 10, 0.30f, 0.10f, 0.010f, 200};
+constexpr AxisGains kArm{5, 0.20f, 0.08f, 0, 0, 0, 0, 1, 0.30f, 0.10f, 0.010f, 50};
+constexpr AxisGains kTip{5, 0.30f, 0.01f, 1, 0, 0, 0, 10, 0.20f, 0.08f, 0.010f, 200};
+static_assert(kYawId == 1 && kArmId == 2 && kTipId == 3, "Check motor mapping");
+static_assert(kTipRatio > 0 && kPlotPage <= 1, "Invalid configuration");
 static_assert(
-  kYawDirection * kYawDirection == 1.0f && kPitchDirection * kPitchDirection == 1.0f,
-  "Direction must be +1 or -1");
-static_assert(kYawMin < kYawMax && kPitchMin < kPitchMax, "Invalid travel limits");
+  kYawDirection * kYawDirection == 1 && kArmDirection * kArmDirection == 1 &&
+    kTipDirection * kTipDirection == 1 && kImuPitchDirection * kImuPitchDirection == 1,
+  "Directions must be +1 or -1");
 }  // namespace tracking_config

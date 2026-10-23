@@ -7,297 +7,380 @@
 #include "task.h"
 #include "trajectory_runtime.hpp"
 
+extern "C" {
+volatile int debug_tracking_state = 0;
+volatile int debug_tracking_fault = 0;
+volatile bool debug_tracking_calibrated = false;
+
+volatile float debug_tracking_target_pitch = 0;
+volatile float debug_tracking_actual_pitch = 0;
+volatile float debug_tracking_error_pitch = 0;
+
+volatile float debug_tracking_arm_error = 0;
+volatile float debug_tracking_yaw = 0;
+
+volatile unsigned int debug_tracking_phase_ms = 0;
+
+volatile float debug_tracking_target_yaw = 0.0f;
+volatile float debug_tracking_speed_yaw = 0.0f;
+volatile float debug_tracking_speed_pitch = 0.0f;
+
+volatile float debug_tracking_torque_yaw = 0.0f;
+volatile float debug_tracking_speed_command_yaw = 0.0f;
+volatile float debug_tracking_actual_speed_yaw = 0.0f;
+
+volatile float debug_tracking_error_yaw = 0.0f;
+}
+
 namespace tracking
 {
 namespace
 {
 using namespace tracking_config;
-AxisController yaw_controller(kYaw), pitch_controller(kTip), arm_controller(kArm);
-bool calibrated = false, calibrating = false, captured_once = false;
-float stable_a = 0, stable_b = 0, stable_c = 0;
-uint32_t calibration_ms = 0;
-float tip_origin = 0, arm_start = 0;
-Telemetry current{}, published{};
-bool armed = false;
-float yaw_origin = 0, pitch_origin = 0, yaw_start = 0, pitch_start = 0;
-uint32_t entry_ms = 0, settled_ms = 0, large_error_ms = 0;
-bool settling = false, large_error = false;
-double error_square_yaw = 0, error_square_pitch = 0;
-
-bool inside(float value, float low, float high) { return value >= low && value <= high; }
-void clear_controllers()
+AxisController yaw_control(kYaw), arm_control(kArm), tip_control(kTip);
+Telemetry t{}, published{};
+bool armed = false, warm = false, settling = false, large_error = false, arm_drift = false;
+uint32_t stage_ms = 0, warm_ms = 0, settled_ms = 0, error_ms = 0, arm_drift_ms = 0;
+float c_entry = 0, level_start = 0;
+double square_yaw = 0, square_pitch = 0;
+bool inside(float q, float lo, float hi) { return q >= lo && q <= hi; }
+void reset()
 {
-  yaw_controller.reset();
-  pitch_controller.reset();
-  arm_controller.reset();
+  yaw_control.reset();
+  arm_control.reset();
+  tip_control.reset();
   trajectory_set_running(false);
-  settling = false;
-  large_error = false;
+  warm = settling = large_error = arm_drift = false;
 }
-void fail(Fault reason)
+void fail(Fault fault)
 {
-  current.state = State::Fault;
-  current.fault = reason;
+  t.state = State::Fault;
+  t.fault = fault;
   armed = false;
-  clear_controllers();
+  reset();
 }
-Command publish(Command command = {})
+Command publish(Command c = {})
 {
-  if (current.state == State::Disabled || current.state == State::Fault) {
-    current.torque_yaw = current.torque_pitch = current.torque_arm = 0;
-    current.speed_command_yaw = current.speed_command_pitch = 0;
-    current.saturation_mask = 0;
-    command = {};
+  if (t.state == State::Disabled || t.state == State::Fault) {
+    c = {};
+    t.torque_yaw = t.torque_arm = t.torque_pitch = 0;
+    t.speed_command_yaw = t.speed_command_pitch = 0;
+    t.pid_yaw = t.ff_yaw = t.pid_pitch = t.ff_pitch = 0;
+    t.accel_yaw = t.accel_pitch = 0;
+    t.saturation_mask = 0;
   }
-  current.calibrated = calibrated;
+  debug_tracking_state = static_cast<int>(t.state);
+  debug_tracking_fault = static_cast<int>(t.fault);
+  debug_tracking_calibrated = t.calibrated;
+
+  debug_tracking_target_pitch = t.target_pitch;
+  debug_tracking_actual_pitch = t.actual_pitch;
+  debug_tracking_error_pitch = t.error_pitch;
+
+  debug_tracking_arm_error = t.arm_error;
+  debug_tracking_yaw = t.actual_yaw;
+
+  debug_tracking_phase_ms = t.phase_ms;
+
+  debug_tracking_target_yaw = t.target_yaw;
+  debug_tracking_speed_yaw = t.speed_yaw;
+  debug_tracking_speed_pitch = t.speed_pitch;
+
+  debug_tracking_torque_yaw = t.torque_yaw;
+  debug_tracking_speed_command_yaw = t.speed_command_yaw;
+  debug_tracking_actual_speed_yaw = t.speed_yaw;
+
+  debug_tracking_error_yaw = t.error_yaw;
   taskENTER_CRITICAL();
-  published = current;
+  published = t;
   taskEXIT_CRITICAL();
-  return command;
+
+  return c;
+}
+void enter(State state, uint32_t now)
+{
+  t.state = state;
+  stage_ms = now;
+  settling = false;
+}
+bool settled(bool close, uint32_t now)
+{
+  if (!close) {
+    settling = false;
+    return false;
+  }
+  if (!settling) {
+    settling = true;
+    settled_ms = now;
+  }
+  return now - settled_ms >= kSettleDurationMs;
+}
+void measure(const Feedback & f)
+{
+  t.actual_yaw = kYawDirection * (f.angle_a - t.yaw_origin);
+  t.actual_pitch = f.pitch - t.pitch_origin;
+  t.imu_pitch = f.pitch;
+  t.arm_error = kArmDirection * (t.arm_hold - f.angle_b);
+  t.tip_position = kTipDirection * (f.angle_c - t.tip_origin);
+  t.speed_yaw = kYawDirection * f.speed_a;
+  t.speed_pitch = f.pitch_rate;
 }
 }  // namespace
-
 Telemetry read_telemetry()
 {
   taskENTER_CRITICAL();
-  const Telemetry result = published;
+  const auto result = published;
   taskEXIT_CRITICAL();
   return result;
 }
-
 Command update(
-  bool requested, bool acknowledge_down, bool remote_ok, const Feedback & f, uint32_t now_ms,
-  uint32_t gap_ms)
+  bool requested, bool acknowledge_down, bool remote_ok, const Feedback & f, uint32_t now,
+  uint32_t gap)
 {
-  const float yaw_encoder = f.angle_a;
-  const float pitch_encoder = f.angle_b;
-  const bool valid = std::isfinite(f.angle_a) && std::isfinite(f.angle_b) &&
-                     std::isfinite(f.speed_a) && std::isfinite(f.speed_b) &&
-                     std::isfinite(f.angle_c) && std::isfinite(f.speed_c);
-  if (!f.alive || !valid) {
-    calibrated = false;
-    calibrating = false;
-  }
-  // 首次上电不依赖遥控器；反馈丢失后的重标定必须先退出运行并回右下档。
-  const bool can_capture = !captured_once || (!requested && remote_ok && acknowledge_down);
-  const bool stationary = f.alive && valid && std::fabs(f.speed_a) < kCalibrationSpeed &&
-                          std::fabs(f.speed_b) < kCalibrationSpeed &&
-                          std::fabs(f.speed_c) < kCalibrationSpeed && gap_ms > 0 &&
-                          gap_ms <= kMaxControlGapMs;
-  if (!calibrated && can_capture && stationary) {
-    if (
-      !calibrating || std::fabs(f.angle_a - stable_a) > kCalibrationMotion ||
-      std::fabs(f.angle_b - stable_b) > kCalibrationMotion ||
-      std::fabs(f.angle_c - stable_c) > kCalibrationMotion) {
-      calibrating = true;
-      calibration_ms = now_ms;
-      stable_a = f.angle_a;
-      stable_b = f.angle_b;
-      stable_c = f.angle_c;
-    }
-    if (now_ms - calibration_ms >= kCalibrationDurationMs) {
-      yaw_origin = f.angle_a;
-      pitch_origin = f.angle_b;
-      tip_origin = f.angle_c;
-      calibrated = true;
-      captured_once = true;
-      calibrating = false;
-    }
-  }
-  else
-    calibrating = false;
-  current.gap_ms = gap_ms;
-  // 即使遥控器未连接，也发布角度反馈，便于排查通道不更新。
-  current.actual_yaw = valid ? kYawDirection * (yaw_encoder - yaw_origin) : 0;
-  current.actual_arm = valid ? kPitchDirection * (pitch_encoder - pitch_origin) : 0;
-  current.actual_tip = valid ? kTipDirection * (f.angle_c - tip_origin) : 0;
-  current.actual_pitch = current.actual_arm + current.actual_tip;
-  current.actual_speed_yaw = kYawDirection * f.speed_a;
-  current.actual_speed_pitch = kPitchDirection * f.speed_b + kTipDirection * f.speed_c;
-
+  t.stamp_ms = now;
+  t.gap_ms = gap;
+  measure(f);
   if (!remote_ok) {
-    if (
-      current.state == State::Align || current.state == State::Wait ||
-      current.state == State::Running)
-      fail(Fault::RemoteLost);
+    if (t.state != State::Disabled && t.state != State::Fault) fail(Fault::RemoteLost);
     armed = false;
     return publish();
   }
   if (!requested) {
-    clear_controllers();
-    // 必须先回右下档才能解锁/确认故障；其他档位不清除故障。
+    reset();
     if (acknowledge_down) {
       armed = true;
-      current.fault = Fault::None;
+      t.fault = Fault::None;
     }
-    current.state = current.fault == Fault::None ? State::Disabled : State::Fault;
+    t.state = t.fault == Fault::None ? State::Disabled : State::Fault;
     return publish();
   }
-  if (current.state == State::Fault) return publish();
+  if (t.state == State::Fault) return publish();
   if (!armed) {
     fail(Fault::NotArmed);
     return publish();
   }
-  if (!f.alive) {
+  if (!f.motors_alive) {
     fail(Fault::FeedbackLost);
     return publish();
   }
-  if (!valid) {
+  if (
+    !std::isfinite(f.angle_a) || !std::isfinite(f.angle_b) || !std::isfinite(f.angle_c) ||
+    !std::isfinite(f.speed_a) || !std::isfinite(f.speed_b) || !std::isfinite(f.speed_c)) {
     fail(Fault::NonFinite);
     return publish();
   }
-  if (!calibrated) {
-    fail(Fault::NotCalibrated);
-    return publish();
-  }
-  if (gap_ms == 0 || gap_ms > kMaxControlGapMs) {
+  if (gap == 0 || gap > kMaxControlGapMs) {
     fail(Fault::Timing);
     return publish();
   }
-  const auto snapshot = trajectory_snapshot();
-  if (!snapshot.ready || now_ms - snapshot.stamp_ms > kReferenceTimeoutMs) {
-    fail(Fault::ReferenceStale);
-    return publish();
+  if (t.state == State::Disabled) {
+    reset();
+    t = {};
+    t.stamp_ms = now;
+    t.gap_ms = gap;
+    t.arm_hold = f.angle_b;
+    t.yaw_origin = f.angle_a;
+    c_entry = f.angle_c;
+    t.tip_origin = f.angle_c;
+    square_yaw = square_pitch = 0;
+    enter(State::WaitImu, now);
+    measure(f);
   }
-  if (current.state == State::Disabled) {
-    clear_controllers();
-    current = {};
-    current.state = State::Align;
-    current.gap_ms = gap_ms;
-    entry_ms = now_ms;
-    error_square_yaw = error_square_pitch = 0;
-    // 进入/退出运行不能重设上电零点。
-    yaw_start = kYawDirection * (yaw_encoder - yaw_origin);
-    arm_start = kPitchDirection * (pitch_encoder - pitch_origin);
-    pitch_start = arm_start + kTipDirection * (f.angle_c - tip_origin);
-  }
-  current.actual_yaw = kYawDirection * (yaw_encoder - yaw_origin);
-  current.actual_arm = kPitchDirection * (pitch_encoder - pitch_origin);
-  current.actual_tip = kTipDirection * (f.angle_c - tip_origin);
-  current.actual_pitch = current.actual_arm + current.actual_tip;
-  current.actual_speed_yaw = kYawDirection * f.speed_a;
-  current.actual_speed_pitch = kPitchDirection * f.speed_b;
-  const float arm_speed = kPitchDirection * f.speed_b;
-  current.actual_speed_pitch = arm_speed + kTipDirection * f.speed_c;
-  if (
-    !inside(current.actual_arm, kArmMin, kArmMax) ||
-    !inside(current.actual_tip, kTipMin, kTipMax) ||
-    !inside(current.actual_yaw, kYawMin, kYawMax) ||
-    !inside(current.actual_pitch, kPitchMin, kPitchMax)) {
-    fail(Fault::TravelLimit);
-    return publish();
-  }
-  const auto initial = trajectory_sample_at_ms(0);
-  Reference yaw_reference{initial.yaw, 0, 0}, pitch_reference{initial.pitch, 0, 0};
-  Reference arm_reference{kArmHold, 0, 0};
-  if (current.state == State::Align) {
-    const float elapsed = (now_ms - entry_ms) * 0.001f;
-    arm_reference = approach(arm_start, kArmHold, elapsed, kAlignDurationMs * 0.001f);
-    yaw_reference = approach(yaw_start, initial.yaw, elapsed, kAlignDurationMs * 0.001f);
-    pitch_reference = approach(pitch_start, initial.pitch, elapsed, kAlignDurationMs * 0.001f);
-    if (now_ms - entry_ms >= kAlignDurationMs) {
-      const bool close = std::fabs(kArmHold - current.actual_arm) < kSettleError &&
-                         std::fabs(arm_speed) < kSettleSpeed &&
-                         std::fabs(initial.yaw - current.actual_yaw) < kSettleError &&
-                         std::fabs(initial.pitch - current.actual_pitch) < kSettleError &&
-                         std::fabs(current.actual_speed_yaw) < kSettleSpeed &&
-                         std::fabs(current.actual_speed_pitch) < kSettleSpeed;
-      if (!close)
-        settling = false;
-      else if (!settling) {
-        settling = true;
-        settled_ms = now_ms;
-      }
-      else if (now_ms - settled_ms >= kSettleDurationMs) {
-        trajectory_set_running(true);
-        current.state = State::Wait;
-      }
-    }
-  }
-  if (current.state == State::Wait && snapshot.running) {
-    yaw_controller.reset();
-    pitch_controller.reset();
-    arm_controller.reset();
-    current.state = State::Running;
-  }
-  if (current.state == State::Running) {
-    if (!snapshot.running) {
-      fail(Fault::ReferenceStale);
-      return publish();
-    }
-    const auto & point = snapshot.point;
-    yaw_reference = {point.yaw, point.yaw_vel, point.yaw_acc};
-    pitch_reference = {point.pitch, point.pitch_vel, point.pitch_acc};
-    current.phase_ms = snapshot.phase_ms;
-  }
-  else if (now_ms - entry_ms > kAlignTimeoutMs) {
-    fail(Fault::AlignTimeout);
-    return publish();
-  }
-  if (!finite(yaw_reference) || !finite(pitch_reference)) {
+  const bool imu_finite =
+    std::isfinite(f.pitch) && std::isfinite(f.pitch_rate) && std::isfinite(f.roll);
+  const bool imu_fresh = f.imu_ready && now - f.imu_stamp_ms <= kImuTimeoutMs;
+  if (f.imu_ready && !imu_finite) {
     fail(Fault::NonFinite);
     return publish();
   }
+  if (t.state != State::WaitImu && !imu_fresh) {
+    fail(Fault::ImuLost);
+    return publish();
+  }
+  if (imu_fresh && (std::fabs(f.pitch) > kMaxAbsolutePitch || std::fabs(f.roll) > kMaxRoll)) {
+    fail(Fault::AttitudeLimit);
+    return publish();
+  }
   if (
-    !inside(yaw_reference.position, kYawMin, kYawMax) ||
-    !inside(pitch_reference.position, kPitchMin, kPitchMax)) {
+    !inside(t.actual_yaw, kYawMin, kYawMax) ||
+    (!t.calibrated && std::fabs(f.angle_c - c_entry) > kMaxLevelTravel) ||
+    (t.calibrated && (!inside(t.tip_position, kTipMin, kTipMax) ||
+                      !inside(t.actual_pitch, kPitchMin, kPitchMax)))) {
     fail(Fault::TravelLimit);
     return publish();
   }
-  const float dt = gap_ms * 0.001f;
-  const auto yo =
-    yaw_controller.step(yaw_reference, current.actual_yaw, current.actual_speed_yaw, dt);
-  // 末端俯仰 = 大臂关节角 + 顶部关节角 + 安装偏置。
-  // 不对实测速度求导：顶部加速度前馈默认关闭。
-  Reference tip_reference{
-    pitch_reference.position - current.actual_arm, pitch_reference.velocity - arm_speed, 0};
-  if (!inside(tip_reference.position, kTipMin, kTipMax)) {
-    fail(Fault::TravelLimit);
-    return publish();
-  }
-  const auto po =
-    pitch_controller.step(tip_reference, current.actual_tip, kTipDirection * f.speed_c, dt);
-  const auto ao = arm_controller.step(arm_reference, current.actual_arm, arm_speed, dt);
-  current.target_arm = arm_reference.position;
-  current.target_tip = tip_reference.position;
-  current.torque_arm = ao.torque;
-  current.target_yaw = yaw_reference.position;
-  current.target_pitch = pitch_reference.position;
-  current.error_yaw = yo.error;
-  current.error_pitch = po.error;
-  current.speed_command_yaw = yo.speed_command;
-  current.speed_command_pitch = po.speed_command;
-  current.torque_yaw = yo.torque;
-  current.torque_pitch = po.torque;
-  current.saturation_mask =
-    (yo.saturated ? 1U : 0U) | (po.saturated ? 2U : 0U) | (ao.saturated ? 4U : 0U);
-  if (current.state == State::Running) {
-    const bool too_large = std::fabs(yo.error) > kMaxTrackingError ||
-                           std::fabs(po.error) > kMaxTrackingError ||
-                           std::fabs(ao.error) > kMaxTrackingError;
-    if (!too_large)
-      large_error = false;
-    else if (!large_error) {
-      large_error = true;
-      large_error_ms = now_ms;
+  if (std::fabs(t.arm_error) > kMaxArmDrift) {
+    if (!arm_drift) {
+      arm_drift = true;
+      arm_drift_ms = now;
     }
-    else if (now_ms - large_error_ms >= kErrorDurationMs) {
-      fail(Fault::TrackingError);
+    if (now - arm_drift_ms >= kErrorDurationMs) {
+      fail(Fault::ArmMoved);
       return publish();
     }
-    // 每次正式播放重置统计；启动靠近阶段不计入跟踪成绩。
-    if (current.samples < UINT32_MAX) {
-      ++current.samples;
-      if (current.saturation_mask) ++current.saturated_samples;
-      error_square_yaw += static_cast<double>(yo.error) * yo.error;
-      error_square_pitch += static_cast<double>(po.error) * po.error;
-      current.rms_yaw = static_cast<float>(std::sqrt(error_square_yaw / current.samples));
-      current.rms_pitch = static_cast<float>(std::sqrt(error_square_pitch / current.samples));
-      current.peak_error_yaw = std::max(current.peak_error_yaw, std::fabs(yo.error));
-      current.peak_error_pitch = std::max(current.peak_error_pitch, std::fabs(po.error));
+  }
+  else
+    arm_drift = false;
+  const float dt = gap * .001f;
+  // B's target and integral remain unchanged through leveling/alignment/playback transitions.
+  const auto bo = arm_control.step(
+    {kArmDirection * t.arm_hold, 0, 0}, kArmDirection * f.angle_b, kArmDirection * f.speed_b, dt);
+  Reference yr{0, 0, 0}, pr{0, 0, 0};
+  if (t.state == State::WaitImu) {
+    const bool still = imu_fresh && std::fabs(f.pitch_rate) < kSettleSpeed &&
+                       std::fabs(f.speed_a) < kSettleSpeed && std::fabs(f.speed_b) < kSettleSpeed &&
+                       std::fabs(f.speed_c) < kSettleSpeed && std::fabs(t.arm_error) < kSettleError;
+    if (!still)
+      warm = false;
+    else if (!warm) {
+      warm = true;
+      warm_ms = now;
+    }
+    else if (now - warm_ms >= kImuWarmupMs) {
+      level_start = f.pitch;
+      tip_control.reset();
+      enter(State::Level, now);
+    }
+    if (t.state == State::WaitImu && now - stage_ms > kWaitImuTimeoutMs) {
+      fail(Fault::ImuWaitTimeout);
+      return publish();
     }
   }
-  const float yaw_torque = kYawDirection * yo.torque;
-  return publish({yaw_torque, kPitchDirection * ao.torque, kTipDirection * po.torque});
+  if (t.state == State::Level) {
+    pr = approach(level_start, 0, (now - stage_ms) * .001f, kLevelDurationMs * .001f);
+    const bool close =
+      now - stage_ms >= kLevelDurationMs && std::fabs(f.pitch) < kLevelTolerance &&
+      std::fabs(f.pitch_rate) < kSettleSpeed && std::fabs(f.speed_c) < kSettleSpeed &&
+      std::fabs(t.actual_yaw) < kSettleError && std::fabs(f.speed_a) < kSettleSpeed &&
+      std::fabs(t.arm_error) < kSettleError && std::fabs(f.speed_b) < kSettleSpeed;
+    if (settled(close, now)) {
+      // Record the physical horizontal point. Do not reset the IMU attitude estimator.
+      t.pitch_origin = f.pitch;
+      t.tip_origin = f.angle_c;
+      t.yaw_origin = f.angle_a;
+      t.arm_at_origin = f.angle_b;
+      t.calibrated = true;
+      measure(f);
+      yaw_control.reset();
+      tip_control.reset();
+      enter(State::Align, now);
+    }
+    else if (now - stage_ms > kLevelTimeoutMs) {
+      fail(Fault::LevelTimeout);
+      return publish();
+    }
+  }
+  if (t.state == State::Align || t.state == State::WaitTrajectory || t.state == State::Running) {
+    const auto snap = trajectory_snapshot();
+    if (!snap.ready || now - snap.stamp_ms > kReferenceTimeoutMs) {
+      fail(Fault::ReferenceStale);
+      return publish();
+    }
+    const auto first = trajectory_sample_at_ms(0);
+    if (t.state == State::Align) {
+      yr = approach(0, first.yaw, (now - stage_ms) * .001f, kAlignDurationMs * .001f);
+      pr = approach(0, first.pitch, (now - stage_ms) * .001f, kAlignDurationMs * .001f);
+      const bool close =
+        now - stage_ms >= kAlignDurationMs && std::fabs(first.yaw - t.actual_yaw) < kSettleError &&
+        std::fabs(first.pitch - t.actual_pitch) < kSettleError &&
+        std::fabs(t.speed_yaw) < kSettleSpeed && std::fabs(f.pitch_rate) < kSettleSpeed &&
+        std::fabs(t.arm_error) < kSettleError && std::fabs(f.speed_b) < kSettleSpeed;
+      if (settled(close, now)) {
+        trajectory_set_running(true);
+        enter(State::WaitTrajectory, now);
+      }
+      else if (now - stage_ms > kAlignTimeoutMs) {
+        fail(Fault::AlignTimeout);
+        return publish();
+      }
+    }
+    if (t.state == State::WaitTrajectory) {
+      yr = {first.yaw, 0, 0};
+      pr = {first.pitch, 0, 0};
+      if (snap.running)
+        enter(State::Running, now);
+      else if (now - stage_ms > kReferenceTimeoutMs) {
+        fail(Fault::ReferenceStale);
+        return publish();
+      }
+    }
+    if (t.state == State::Running) {
+      if (!snap.running) {
+        fail(Fault::ReferenceStale);
+        return publish();
+      }
+      yr = {snap.point.yaw, snap.point.yaw_vel, snap.point.yaw_acc};
+      pr = {snap.point.pitch, snap.point.pitch_vel, snap.point.pitch_acc};
+      t.phase_ms = snap.phase_ms;
+    }
+    if (!finite(yr) || !finite(pr)) {
+      fail(Fault::NonFinite);
+      return publish();
+    }
+    // Actual C encoder limits AND required C relative travel with B's residual error.
+    if (
+      !inside(yr.position, kYawMin, kYawMax) || !inside(pr.position, kPitchMin, kPitchMax) ||
+      !inside(pr.position + kArmDirection * (t.arm_at_origin - f.angle_b), kTipMin, kTipMax)) {
+      fail(Fault::TravelLimit);
+      return publish();
+    }
+    pr.position += t.pitch_origin;  // absolute IMU frame, including gravity compensation
+  }
+  const auto ao = yaw_control.step(yr, t.actual_yaw, t.speed_yaw, dt);
+  AxisOutput co;
+  if (t.state == State::WaitImu) {
+    co = tip_control.step(
+      {0, 0, 0}, kTipDirection * (f.angle_c - c_entry), kTipDirection * f.speed_c, dt,
+      kLevelMaxSpeed);
+    t.target_pitch = imu_finite ? f.pitch : 0;
+    t.actual_pitch = t.target_pitch;
+  }
+  else {
+    co =
+      tip_control.step(pr, f.pitch, f.pitch_rate, dt, t.state == State::Level ? kLevelMaxSpeed : 0);
+    t.target_pitch = pr.position - t.pitch_origin;
+  }
+  t.target_yaw = yr.position;
+  t.error_yaw = ao.error;
+  t.error_pitch = t.target_pitch - t.actual_pitch;
+  t.speed_command_yaw = ao.speed_command;
+  t.speed_command_pitch = co.speed_command;
+  t.pid_yaw = ao.pid_torque;
+  t.ff_yaw = ao.feedforward_torque;
+  t.pid_pitch = co.pid_torque;
+  t.ff_pitch = co.feedforward_torque;
+  t.accel_yaw = ao.acceleration_command;
+  t.accel_pitch = co.acceleration_command;
+  t.torque_yaw = ao.torque;
+  t.torque_arm = bo.torque;
+  t.torque_pitch = co.torque;
+  t.saturation_mask =
+    (ao.saturated ? 1U : 0U) | (bo.saturated ? 2U : 0U) | (co.saturated ? 4U : 0U);
+  if (t.state == State::Running) {
+    if (
+      std::fabs(t.error_yaw) > kMaxTrackingError || std::fabs(t.error_pitch) > kMaxTrackingError) {
+      if (!large_error) {
+        large_error = true;
+        error_ms = now;
+      }
+      if (now - error_ms >= kErrorDurationMs) {
+        fail(Fault::TrackingError);
+        return publish();
+      }
+    }
+    else
+      large_error = false;
+    if (t.samples < UINT32_MAX) {
+      ++t.samples;
+      if (t.saturation_mask) ++t.saturated_samples;
+      square_yaw += double(t.error_yaw) * t.error_yaw;
+      square_pitch += double(t.error_pitch) * t.error_pitch;
+      t.rms_yaw = std::sqrt(square_yaw / t.samples);
+      t.rms_pitch = std::sqrt(square_pitch / t.samples);
+      t.peak_error_yaw = std::max(t.peak_error_yaw, std::fabs(t.error_yaw));
+      t.peak_error_pitch = std::max(t.peak_error_pitch, std::fabs(t.error_pitch));
+    }
+  }
+  return publish({kYawDirection * ao.torque, kArmDirection * bo.torque, kTipDirection * co.torque});
 }
 }  // namespace tracking

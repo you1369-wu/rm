@@ -2,6 +2,7 @@
 #define APPLICATIONS_IMU_TASK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,8 @@ typedef struct
   ImuVector3Data gyro_rad_s;
   ImuEulerData euler;
   float temp_c;
+  float pitch_rate_rad_s;
+  uint32_t stamp_ms;
 } ImuTaskData;
 
 void imu_task(void const * argument);
