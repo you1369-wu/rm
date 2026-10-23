@@ -73,9 +73,22 @@ count, last sample timestamp, and an `active` flag. All state has a single write
 ## Plot
 
 The existing USART1 plot_task sends 18 channels every 10 ms:
-CH1/CH2=tip target/actual pitch (actual pitch from IMU), CH3/CH4=target/actual yaw.
-CH5=`pitch_ratio`, CH6=`yaw_ratio`, both in [0,1]. CH7 is the tip encoder angle
-relative to its calibrated zero. Other channels retain their order.
+The current view shows both axes tracking their target trajectories:
+
+| Channel | Value |
+| --- | --- |
+| 1 / 2 | Target / encoder-measured yaw, rad |
+| 3 / 4 | Target / IMU-measured relative pitch, rad |
+| 5 / 6 | `pitch_ratio` / `yaw_ratio`, both in [0,1] |
+| 7 / 8 | Tip encoder position / pitch tracking error, rad |
+| 9 / 10 / 11 | Yaw / arm / tip limited torque, N*m |
+| 12 / 13 | Yaw / pitch RMS position error, rad |
+| 14 / 15 / 16 | Tracking state / fault / calibration flag |
+| 17 / 18 | Trajectory phase, ms / three-axis saturation mask |
+
+The yaw tracking curve uses encoder feedback, while yaw scoring uses the
+calibrated IMU-relative yaw described above. CH5/CH6 are the organizer-defined
+filtered ratios, not final points out of 40.
 The existing binary Plotter protocol is unchanged: `AA BB 48` then 18 float32
 values. This is not text.
 

@@ -20,10 +20,11 @@ extern "C" void plot_task(void const * argument)
 	while (1) {
 		const auto t = tracking::read_telemetry();
 		const auto score = tracking_score::read_score();
-		// CH1/2=tip目标/实际pitch(rad，实际值取IMU)，CH3/4=yaw目标/实际角。
-		// 保留18通道：CH5=pitch_ratio，CH6=yaw_ratio，CH7=tip编码器相对角。
+		// 恢复两轴轨迹跟踪：CH1/2=yaw目标/实际角，CH3/4=pitch目标/实际角(rad)。
+		// CH5=pitch_ratio，CH6=yaw_ratio：赛事评分比例，范围[0,1]。
+		// 其余通道恢复为tip位置、pitch误差、三轴力矩、RMS及状态信息。
 		plotter.plot(
-			t.target_pitch, t.actual_pitch, t.target_yaw, t.actual_yaw,
+			t.target_yaw, t.actual_yaw, t.target_pitch, t.actual_pitch,
 			score.pitch_ratio, score.yaw_ratio,
 			t.tip_position, t.error_pitch, t.torque_yaw, t.torque_arm, t.torque_pitch,
 			t.rms_yaw, t.rms_pitch, static_cast<float>(t.state), static_cast<float>(t.fault),

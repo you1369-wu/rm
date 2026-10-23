@@ -35,7 +35,7 @@ struct AxisGains
   float acceleration_filter_s, max_acceleration;
 };
 // Starting values only. Motor IDs cannot determine inertia/damping/gravity.
-constexpr AxisGains kYaw{5, 0.15f, 0.12f, 1, 0, 0, 0, 10, 0.30f, 0.10f, 0.010f, 200};
+constexpr AxisGains kYaw{5.5f, 0.20f, 0.15f, 1, 0, 0, 0, 10, 0.80f, 0.10f, 0.010f, 200};
 constexpr AxisGains kArm{5, 0.20f, 0.08f, 0, 0, 0, 0, 1, 0.30f, 0.10f, 0.010f, 50};
 constexpr AxisGains kTip{5.5f, 0.30f, 0.01f, 1, 0, 0, 0, 10, 0.20f, 0.08f, 0.010f, 200};
 static_assert(kYawId == 1 && kArmId == 2 && kTipId == 3, "Check motor mapping");
