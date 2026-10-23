@@ -1,26 +1,24 @@
 #include "FreeRTOS.h"
 #include "cmsis_os.h"
+#include "imu_task.h"
 #include "io/plotter/plotter.hpp"
 #include "task.h"
-#include "tracking_mode.hpp"
 
 sp::Plotter plotter(&huart1, false);
 
 extern "C" void plot_task(void const * argument)
 {
   (void)argument;
-  TickType_t wake_tick = xTaskGetTickCount();
   for (;;) {
-    const auto t = tracking::read_telemetry();
-    plotter.plot(
-      t.target_yaw, t.actual_yaw, t.target_pitch, t.actual_pitch, t.target_arm, t.actual_arm,
-      t.target_tip, t.actual_tip, t.torque_yaw, t.torque_arm, t.torque_pitch, t.rms_yaw,
-      t.rms_pitch, static_cast<float>(t.state), static_cast<float>(t.fault),
-      static_cast<float>(t.calibrated), static_cast<float>(t.phase_ms),
-      static_cast<float>(t.saturation_mask));
-    // 75字节*100Hz=7500B/s < 115200/10=11520B/s。
-    if (xTaskGetTickCount() - wake_tick >= pdMS_TO_TICKS(tracking_config::kPlotPeriodMs))
-      wake_tick = xTaskGetTickCount();
-    vTaskDelayUntil(&wake_tick, pdMS_TO_TICKS(tracking_config::kPlotPeriodMs));
+    // imu 对象属于 IMU 任务内部，通过已有接口读取姿态，不能使用 extern 直接访问。
+    ImuTaskData imu_data = {};
+    taskENTER_CRITICAL();
+    const bool ready = imu_task_get_data(&imu_data);
+    taskEXIT_CRITICAL();
+    if (ready) {
+      // 三个通道依次为 yaw、pitch、roll，单位 rad。
+      plotter.plot(imu_data.euler.yaw_rad, imu_data.euler.pitch_rad, imu_data.euler.roll_rad);
+    }
+    osDelay(10);
   }
 }
