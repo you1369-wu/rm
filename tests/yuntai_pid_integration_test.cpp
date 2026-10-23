@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include "../applications/mission/mission_config.hpp"
 
 // Exercise the production helpers without adding test hooks to the firmware.
 #include "../applications/control_task.cpp"
@@ -75,6 +76,7 @@ void prepare()
   remote_input.is_alive = true;
   remote_input.sw_r = REMOTE_SWITCH_DOWN;
   remote_input.sw_l = REMOTE_SWITCH_MID;
+  distance = static_cast<uint16_t>(min_distance_cm + fold_distance_hysteresis_cm + 10U);
   fold_control_initialized = false;
   fold_home_calibrated = false;
   fold_home_settling = false;
@@ -209,6 +211,7 @@ void CAN::send(uint32_t tx_id)
 
 int main()
 {
+  check(fold_hold_duration_ms == 3000U, "folded position retains the requested 3 second hold");
   check(near(yuntai_other_limit_offset_rad, 1.9f) && near(yuntai_unfolded_offset_rad, 1.8f) &&
           near(yuntai_folded_offset_rad, 0.0f), "production defaults preserve the current offsets");
   check(std::isnan(yuntai_min_angle_rad) && std::isnan(yuntai_max_angle_rad) &&
@@ -346,22 +349,27 @@ int main()
   motor_a.angle = yuntai_unfolded_angle_rad;
   fold_tick(0xFFFFU, 0U);
   check(fold_stage == FoldStage::READY, "invalid distance cannot trigger folding");
-  fold_tick(30U, 0U);
-  check(fold_stage == FoldStage::FOLDING && !fold_trigger_armed, "30 cm still triggers folding");
+  fold_tick(static_cast<uint16_t>(min_distance_cm + 1U), 0U);
+  check(fold_stage == FoldStage::READY, "distance above the configured threshold does not fold");
+  fold_tick(min_distance_cm, 0U);
+  check(fold_stage == FoldStage::FOLDING && !fold_trigger_armed,
+        "the current configured distance threshold triggers folding");
   motor_a.angle = yuntai_folded_angle_rad;
-  fold_tick(30U, 1U);
-  fold_tick(30U, 101U);
+  fold_tick(min_distance_cm, 1U);
+  fold_tick(min_distance_cm, 101U);
   check(fold_stage == FoldStage::FOLDED_HOLD, "fold arrival still requires stable feedback");
-  fold_tick(100U, 101U + fold_hold_duration_ms);
+  const uint32_t unfold_start_ms = 101U + fold_hold_duration_ms;
+  fold_tick(100U, unfold_start_ms);
   check(fold_stage == FoldStage::UNFOLDING, "hold duration still starts unfolding");
   motor_a.angle = yuntai_unfolded_angle_rad;
-  fold_tick(100U, 5102U);
-  fold_tick(100U, 5202U);
+  fold_tick(100U, unfold_start_ms + 1U);
+  fold_tick(100U, unfold_start_ms + 101U);
   check(fold_stage == FoldStage::READY, "unfold arrival still returns to READY");
-  fold_tick(34U, 5203U);
-  check(!fold_trigger_armed, "34 cm remains inside the hysteresis band");
-  fold_tick(35U, 5204U);
-  check(fold_trigger_armed, "35 cm still rearms the next fold");
+  const auto rearm_distance = static_cast<uint16_t>(min_distance_cm + fold_distance_hysteresis_cm);
+  fold_tick(static_cast<uint16_t>(rearm_distance - 1U), unfold_start_ms + 102U);
+  check(!fold_trigger_armed, "distance below the configured rearm point remains unarmed");
+  fold_tick(rearm_distance, unfold_start_ms + 103U);
+  check(fold_trigger_armed, "the configured hysteresis rearms the next fold");
 
   prepare();
   angle_control_tick(motor_a.angle + 0.2f, motor_b.angle + 0.2f);
@@ -435,8 +443,8 @@ int main()
     remote_input.sw_l = REMOTE_SWITCH_MID;
     control_tick();
     check(control_mode == ControlMode::DISABLED && !fold_control_initialized,
-          "manual right UP plus left MID still selects DISABLED");
-    check_zero_commands("unused manual switch combination cannot enable folding");
+          "manual right UP plus left MID selects DISABLED");
+    check_zero_commands("unused manual combination remains zero torque");
   }
 
   prepare();
@@ -595,6 +603,7 @@ int main()
         test_tracking.fault == tracking::Fault::NotArmed, "startup UP cannot bypass DOWN arming");
   check_zero_commands("unarmed tracking remains zero torque");
 
+
   // Automatic selection uses the real dispatcher, original fold controller and common CAN sender.
   prepare();
   remote_input.sw_l = REMOTE_SWITCH_DOWN;
@@ -621,19 +630,20 @@ int main()
   control_tick();
   check(fold_stage == FoldStage::READY, "automatic fold stage still uses original arrival logic");
   gimbal_tracking_request_start();
-  now_ms = auto_start_ms + 19999U;
+  now_ms = auto_start_ms + (mission_config::kFoldDurationMs - 1U);
   refresh_feedback();
   motor_a.angle = yuntai_unfolded_angle_rad;
   control_tick();
-  check(control_mode == ControlMode::FOLD && mission_status.fold_elapsed_ms == 19999U,
+  check(control_mode == ControlMode::FOLD &&
+          mission_status.fold_elapsed_ms == (mission_config::kFoldDurationMs - 1U),
         "program requests cannot skip the automatic fold interval");
   test_tracking_command = {0.06f, -0.04f, 0.03f};
-  now_ms = auto_start_ms + 20000U;
+  now_ms = auto_start_ms + mission_config::kFoldDurationMs;
   refresh_feedback();
   motor_a.angle = yuntai_unfolded_angle_rad;
   control_tick();
   check(control_mode == ControlMode::TRACKING && mission_status.state == mission::State::Tracking &&
-          !fold_control_initialized, "exactly 20 seconds exits folding and enters tracking");
+          !fold_control_initialized, "exactly 7 seconds exits folding and enters tracking");
   check(near(motor_b_data.given_torque, 0.06f) && near(motor_a_data.given_torque, -0.04f) &&
           near(motor_c_data.given_torque, 0.03f), "automatic tracking preserves physical ID mapping");
   remote_input.sw_r = REMOTE_SWITCH_DOWN;
@@ -743,7 +753,7 @@ int main()
   refresh_feedback();
   motor_a.angle = yuntai_unfolded_angle_rad;
   control_tick();
-  now_ms = 20000U;
+  now_ms = mission_config::kFoldDurationMs;
   refresh_feedback();
   motor_a.angle = yuntai_unfolded_angle_rad;
   motor_c.speed = NAN;

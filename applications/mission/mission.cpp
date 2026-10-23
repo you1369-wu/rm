@@ -56,7 +56,7 @@ Request Controller::update(const Input & input)
     return Request::Disabled;
   }
   if (status_.state == State::WaitReady) {
-    // 标定或反馈未就绪时不输出，也不提前消耗 20 秒计时。
+    // 标定或反馈未就绪时不输出，也不提前消耗 7 秒计时。
     if (!input.motors_ready || !input.fold_ready) return Request::Disabled;
     status_.started_ms = input.now_ms;
     status_.state = State::Fold;

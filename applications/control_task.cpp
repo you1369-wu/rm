@@ -180,7 +180,7 @@ extern "C" void control_task(void const * argument)
     const ControlSource previous_source = control_source;
     taskENTER_CRITICAL();
     control_source = automatic_selected ? ControlSource::AUTOMATIC : ControlSource::MANUAL;
-    // 自动入口不接受/排队原程序循迹请求，避免提前跳过 20 秒折叠阶段。
+    // 自动入口不接受/排队原程序循迹请求，避免提前跳过 7 秒折叠阶段。
     if (!online || down || automatic_selected) automatic_request = false;
     if (down) stop_latched = false;
     const bool auto_run = automatic_request, stopped = stop_latched;

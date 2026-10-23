@@ -21,12 +21,12 @@ float motor_a_gravity_horizontal_angle_rad = NAN;
 float motor_a_gravity_compensation_torque_nm = 0.0f;
 constexpr float kMotorAMaxGivenTorqueNm = 0.45f;
 
-uint16_t min_distance_cm = 60U;             // 折叠触发阈值，单位 cm。
+uint16_t min_distance_cm = 120U;            // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
 
 // 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
 // 实测机械最小端 = 最大端 + 1.5；两目标各向行程内退 0.2，任一偏移为 NAN 则禁止控制。
-float yuntai_other_limit_offset_rad = 1.9f;  // 机械最小限位端相对开机最大端。
+float yuntai_other_limit_offset_rad = 2.0f;  // 机械最小限位端相对开机最大端。
 float yuntai_unfolded_offset_rad = 1.8f;     // 展开 = 机械最小端 - 0.1 = 最大端 + 1.8。
 float yuntai_folded_offset_rad = 0.0f;       // 折叠 = 机械最大端 。
 
@@ -323,7 +323,7 @@ void update_fold_mode(
     run_disable_mode();
   }
   else {
-    // 有效距离触发折叠；到位后保持 5 秒，再返回展开角度。
+    // 有效距离触发折叠；到位后保持 3 秒，再返回展开角度。
     run_yuntai_fold(distance_cm, now_ms);
   }
 }

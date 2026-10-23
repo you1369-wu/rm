@@ -39,6 +39,8 @@ void arm(mission::Controller & controller, mission::Input & input)
 int main()
 {
   using namespace mission;
+  check(mission_config::kFoldDurationMs == 7000U,
+        "automatic folding duration is seven seconds in total, not seven plus three");
   Controller controller;
   Input input = ready_input();
   check(controller.update(input) == Request::Disabled &&
@@ -64,7 +66,7 @@ int main()
   ++input.now_ms;
   check(controller.update(input) == Request::Tracking &&
           controller.status().fold_elapsed_ms == mission_config::kFoldDurationMs,
-        "the exact 20 second deadline requests tracking");
+        "the exact 7 second deadline requests tracking without adding the fold hold");
   input.now_ms += 50000U;
   check(controller.update(input) == Request::Tracking,
         "tracking remains selected instead of restarting the fold timer");
@@ -115,7 +117,7 @@ int main()
   input.stop_requested = true;
   input.now_ms += mission_config::kFoldDurationMs;
   check(controller.update(input) == Request::Disabled && controller.status().fault == Fault::ProgramStop,
-        "program stop takes priority over the 20 second deadline");
+        "program stop takes priority over the 7 second deadline");
   input.stop_requested = false;
   arm(controller, input);
   controller.update(input);
@@ -130,13 +132,13 @@ int main()
         "zero control interval is also rejected");
 
   input.gap_ms = 1U;
-  input.now_ms = UINT32_MAX - 9999U;
+  input.now_ms = UINT32_MAX - 999U;
   arm(controller, input);
   check(controller.update(input) == Request::Fold, "fold starts before the millisecond counter wraps");
-  input.now_ms = 9999U;
+  input.now_ms = mission_config::kFoldDurationMs - 1001U;
   check(controller.update(input) == Request::Fold, "wraparound retains the pre-deadline interval");
-  input.now_ms = 10000U;
+  ++input.now_ms;
   check(controller.update(input) == Request::Tracking, "wraparound reaches the exact deadline");
-  std::cout << "PASS: mission arming, readiness, 20s deadline, manual exit, disable priority, "
+  std::cout << "PASS: mission arming, readiness, 7s deadline, manual exit, disable priority, "
                "fault latching and timer wraparound\n";
 }
