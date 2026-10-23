@@ -21,7 +21,7 @@ float motor_a_gravity_horizontal_angle_rad = NAN;
 float motor_a_gravity_compensation_torque_nm = 0.0f;
 constexpr float kMotorAMaxGivenTorqueNm = 0.45f;
 
-uint16_t min_distance_cm = 30U;             // 折叠触发阈值，单位 cm。
+uint16_t min_distance_cm = 45U;             // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
 
 // 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
