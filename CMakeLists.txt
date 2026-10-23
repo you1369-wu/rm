@@ -55,6 +55,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     applications/data_interfaces/usart_callbacks.cpp
     applications/data_interfaces/can_task.cpp
     applications/control_task.cpp
+    applications/mission/mission.cpp
     applications/fold_mode/fold_mode.cpp
     applications/tracking_mode/tracking_control/tracking_controller.cpp
     applications/tracking_mode/tracking_control/tracking_mode.cpp

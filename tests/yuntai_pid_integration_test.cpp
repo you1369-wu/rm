@@ -62,6 +62,9 @@ void prepare()
 {
   now_ms = 0U;
   control_mode = ControlMode::DISABLED;
+  control_source = ControlSource::MANUAL;
+  mission_controller = mission::Controller{};
+  mission_status = {};
   automatic_request = stop_latched = false;
   test_tracking = {};
   test_tracking_command = {};
@@ -71,6 +74,7 @@ void prepare()
   remote_input = {};
   remote_input.is_alive = true;
   remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  remote_input.sw_l = REMOTE_SWITCH_MID;
   fold_control_initialized = false;
   fold_home_calibrated = false;
   fold_home_settling = false;
@@ -425,14 +429,14 @@ int main()
   check(fold_home_calibrated, "DOWN calibration still completes after an uninterrupted interval");
   check_zero_commands("calibration after a mode switch remains zero torque");
 
-  for (const auto left : {REMOTE_SWITCH_DOWN, REMOTE_SWITCH_MID}) {
+  {
     prepare();
     remote_input.sw_r = REMOTE_SWITCH_UP;
-    remote_input.sw_l = left;
+    remote_input.sw_l = REMOTE_SWITCH_MID;
     control_tick();
     check(control_mode == ControlMode::DISABLED && !fold_control_initialized,
-          "right UP without left UP selects DISABLED");
-    check_zero_commands("unused switch combinations cannot enable folding");
+          "manual right UP plus left MID still selects DISABLED");
+    check_zero_commands("unused manual switch combination cannot enable folding");
   }
 
   prepare();
@@ -590,6 +594,164 @@ int main()
   check(control_mode == ControlMode::DISABLED &&
         test_tracking.fault == tracking::Fault::NotArmed, "startup UP cannot bypass DOWN arming");
   check_zero_commands("unarmed tracking remains zero torque");
+
+  // Automatic selection uses the real dispatcher, original fold controller and common CAN sender.
+  prepare();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  control_tick();  // Observe right DOWN before allowing the automatic sequence.
+  check(control_source == ControlSource::AUTOMATIC && control_mode == ControlMode::DISABLED &&
+          mission_status.armed, "right DOWN overrides automatic selection and arms it");
+  check_zero_commands("right DOWN in automatic mode sends zero to all three motors");
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  gimbal_tracking_request_start();
+  control_tick();
+  check(control_mode == ControlMode::FOLD && mission_status.state == mission::State::Fold &&
+          mission_status.fold_elapsed_ms == 0U && !automatic_request,
+        "left DOWN starts folding and discards legacy tracking requests");
+  const uint32_t auto_start_ms = mission_status.started_ms;
+  now_ms = 100U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::FOLD, "right UP with left DOWN remains automatic folding");
+  now_ms = 200U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  control_tick();
+  check(fold_stage == FoldStage::READY, "automatic fold stage still uses original arrival logic");
+  gimbal_tracking_request_start();
+  now_ms = auto_start_ms + 19999U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && mission_status.fold_elapsed_ms == 19999U,
+        "program requests cannot skip the automatic fold interval");
+  test_tracking_command = {0.06f, -0.04f, 0.03f};
+  now_ms = auto_start_ms + 20000U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  control_tick();
+  check(control_mode == ControlMode::TRACKING && mission_status.state == mission::State::Tracking &&
+          !fold_control_initialized, "exactly 20 seconds exits folding and enters tracking");
+  check(near(motor_b_data.given_torque, 0.06f) && near(motor_a_data.given_torque, -0.04f) &&
+          near(motor_c_data.given_torque, 0.03f), "automatic tracking preserves physical ID mapping");
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && mission_status.state == mission::State::Disabled &&
+          mission_status.fold_elapsed_ms == 0U, "right DOWN stops tracking and clears the timer");
+  check_zero_commands("right DOWN after automatic tracking sends zero commands");
+  now_ms += 1U;
+  refresh_feedback();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && mission_status.fold_elapsed_ms == 0U,
+        "restarting automatic mode always begins with a fresh fold interval");
+
+  prepare();
+  control_tick();
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  motor_a_pid_speed.data.iout = 0.15f;
+  fold_stage = FoldStage::FOLDED_HOLD;
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(control_source == ControlSource::AUTOMATIC && control_mode == ControlMode::FOLD &&
+          fold_stage == FoldStage::UNFOLDING && mission_status.fold_elapsed_ms == 0U,
+        "manual FOLD to automatic FOLD restarts the sequence despite the same control mode");
+  remote_input.sw_l = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_source == ControlSource::MANUAL && control_mode == ControlMode::FOLD &&
+          mission_status.state == mission::State::Disabled, "leaving automatic restores manual FOLD");
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(control_mode == ControlMode::FOLD && mission_status.fault == mission::Fault::None &&
+          mission_status.fold_elapsed_ms == 0U,
+        "normal automatic reentry starts a new fold interval without requiring fault acknowledgment");
+
+  prepare();
+  fold_home_calibrated = false;
+  motor_a_gravity_horizontal_angle_rad = NAN;
+  control_tick();
+  now_ms = 50U;
+  refresh_feedback();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && mission_status.state == mission::State::WaitReady,
+        "automatic selection cannot skip unfinished home calibration");
+  now_ms = 20050U;
+  refresh_feedback();
+  control_tick();
+  check(mission_status.state == mission::State::WaitReady && mission_status.fold_elapsed_ms == 0U,
+        "waiting without home calibration never advances into tracking");
+  check_zero_commands("automatic readiness wait keeps zero torque");
+
+  prepare();
+  control_tick();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  remote_input.is_alive = false;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && mission_status.fault == mission::Fault::RemoteLost,
+        "remote loss terminates automatic operation");
+  remote_input.is_alive = true;
+  remote_input.sw_r = remote_input.sw_l = REMOTE_SWITCH_UP;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && mission_status.fault == mission::Fault::RemoteLost,
+        "manual tracking selection cannot bypass an automatic loss fault");
+  check_zero_commands("automatic remote fault stays zero after manual selection");
+  remote_input.sw_r = REMOTE_SWITCH_DOWN;
+  control_tick();
+  check(mission_status.fault == mission::Fault::None, "right DOWN acknowledges the automatic fault");
+
+  prepare();
+  control_tick();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  now_ms = fold_motion_timeout_ms + 1U;
+  refresh_feedback();
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && fold_fault == FoldFault::UNFOLD_TIMEOUT &&
+          mission_status.fault == mission::Fault::ControlFault,
+        "automatic folding faults latch and disable in the same control period");
+  check_zero_commands("automatic fold timeout clears all commands");
+
+  prepare();
+  control_tick();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  remote_input.sw_r = REMOTE_SWITCH_MID;
+  control_tick();
+  gimbal_tracking_request_stop();
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && mission_status.fault == mission::Fault::ProgramStop,
+        "program stop also aborts automatic folding");
+  check_zero_commands("program stop in automatic mode stays zero torque");
+
+  prepare();
+  control_tick();
+  remote_input.sw_l = REMOTE_SWITCH_DOWN;
+  remote_input.sw_r = REMOTE_SWITCH_UP;
+  control_tick();
+  now_ms = 100U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  control_tick();
+  now_ms = 200U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  control_tick();
+  now_ms = 20000U;
+  refresh_feedback();
+  motor_a.angle = yuntai_unfolded_angle_rad;
+  motor_c.speed = NAN;
+  control_tick();
+  check(control_mode == ControlMode::DISABLED && test_tracking.fault == tracking::Fault::NonFinite &&
+          mission_status.fault == mission::Fault::ControlFault,
+        "bad C feedback at the timed handover cannot retain fold torque or start tracking");
+  check_zero_commands("failed automatic tracking entry zeroes both CAN command groups");
 
   std::cout << "PASS: mapped PID gains, startup calibration, gravity sum, torque cap, CAN slots, "
                "travel limits, disable priorities, fault paths, folding sequence and mode transitions\n";

@@ -10,6 +10,7 @@ try {
     $gravityExe = 'build/host-tests/gravity_compensation_test.exe'
     $sources = @(
         'tests/yuntai_pid_integration_test.cpp',
+        'applications/mission/mission.cpp',
         'applications/data_interfaces/can_task.cpp',
         'sp_middleware/tools/pid/pid.cpp',
         'sp_middleware/tools/math_tools/math_tools.cpp',

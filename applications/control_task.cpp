@@ -24,6 +24,8 @@ GimbalData motor_b_data;
 GimbalData motor_c_data;
 
 ControlMode control_mode = ControlMode::DISABLED;
+ControlSource control_source = ControlSource::MANUAL;
+mission::Status mission_status{};
 
 extern "C" {
 // 保留循迹调试变量名：这里的 A 指循迹 yaw（ID 1，即 main 的 motor_b）。
@@ -38,12 +40,14 @@ volatile uint32_t debug_can_a_send_count = 0;
 namespace
 {
 bool automatic_request = false, stop_latched = false;
+// 自动任务只生成模式请求，仍由本任务执行控制器并统一发送 CAN。
+mission::Controller mission_controller;
 }
 
 extern "C" void gimbal_tracking_request_start(void)
 {
   taskENTER_CRITICAL();
-  automatic_request = true;
+  if (control_source != ControlSource::AUTOMATIC) automatic_request = true;
   taskEXIT_CRITICAL();
 }
 
@@ -55,14 +59,15 @@ extern "C" void gimbal_tracking_request_stop(void)
   taskEXIT_CRITICAL();
 }
 
-//顶层状态机：右下失能，右中折叠，右上加左上循迹
+// 顶层状态机：右下总失能；左下自动，其余保留右中折叠/双上循迹。
 static ControlMode select_control_mode(
   const RemoteTaskData & remote_data, bool remote_ready, bool motors_ready,
-  bool tracking_requested)
+  bool tracking_requested, mission::Request mission_request)
 {
   // 公共安全条件优先；遥控器或电机反馈异常时，不允许任何运动模式输出。
   if (
-    !remote_ready || !remote_data.is_alive || !motors_ready || !std::isfinite(motor_a.angle) ||
+    !remote_ready || !remote_data.is_alive || remote_data.sw_r == REMOTE_SWITCH_DOWN ||
+    !motors_ready || !std::isfinite(motor_a.angle) ||
     !std::isfinite(motor_a.speed) || !std::isfinite(motor_b.angle) ||
     !std::isfinite(motor_b.speed)) {
     return ControlMode::DISABLED;
@@ -70,7 +75,14 @@ static ControlMode select_control_mode(
 
   // 模式切换不清除另一模式的故障；两边均由右下档确认。
   if (fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None ||
-      stop_latched) return ControlMode::DISABLED;
+      stop_latched || mission_controller.status().fault != mission::Fault::None)
+    return ControlMode::DISABLED;
+
+  if (control_source == ControlSource::AUTOMATIC) {
+    if (mission_request == mission::Request::Fold && fold_mode_ready()) return ControlMode::FOLD;
+    if (mission_request == mission::Request::Tracking) return ControlMode::TRACKING;
+    return ControlMode::DISABLED;
+  }
 
   if (tracking_requested) {
     return ControlMode::TRACKING;
@@ -164,18 +176,38 @@ extern "C" void control_task(void const * argument)
     previous_ms = now_ms;
     const bool online = remote_ready && remote_data.is_alive;
     const bool down = online && remote_data.sw_r == REMOTE_SWITCH_DOWN;
+    const bool automatic_selected = online && remote_data.sw_l == REMOTE_SWITCH_DOWN;
+    const ControlSource previous_source = control_source;
     taskENTER_CRITICAL();
-    if (!online || down) automatic_request = false;
+    control_source = automatic_selected ? ControlSource::AUTOMATIC : ControlSource::MANUAL;
+    // 自动入口不接受/排队原程序循迹请求，避免提前跳过 20 秒折叠阶段。
+    if (!online || down || automatic_selected) automatic_request = false;
     if (down) stop_latched = false;
     const bool auto_run = automatic_request, stopped = stop_latched;
     taskEXIT_CRITICAL();
+
+    mission::Input mission_input{};
+    mission_input.selected = automatic_selected;
+    mission_input.remote_online = online;
+    mission_input.disable_requested = down;
+    mission_input.motors_ready = motors_ready && std::isfinite(feedback.angle_a) &&
+      std::isfinite(feedback.speed_a) && std::isfinite(feedback.angle_b) &&
+      std::isfinite(feedback.speed_b);
+    mission_input.fold_ready = fold_mode_ready();
+    mission_input.control_fault = fold_mode_faulted() ||
+      tracking::read_telemetry().fault != tracking::Fault::None;
+    mission_input.stop_requested = stopped;
+    mission_input.now_ms = now_ms;
+    mission_input.gap_ms = gap_ms;
+    const auto mission_request = mission_controller.update(mission_input);
     const bool tracking_requested = online && !down && !stopped &&
-      (auto_run || (remote_data.sw_r == REMOTE_SWITCH_UP &&
-                   remote_data.sw_l == REMOTE_SWITCH_UP));
+      (automatic_selected ? mission_request == mission::Request::Tracking :
+        (auto_run || (remote_data.sw_r == REMOTE_SWITCH_UP &&
+                     remote_data.sw_l == REMOTE_SWITCH_UP)));
 
     const ControlMode next_mode =
-      select_control_mode(remote_data, remote_ready, motors_ready, tracking_requested);
-    if (next_mode != control_mode) {
+      select_control_mode(remote_data, remote_ready, motors_ready, tracking_requested, mission_request);
+    if (next_mode != control_mode || previous_source != control_source) {
       if (control_mode == ControlMode::TRACKING) {
         // 仍请求循迹却因反馈异常退出时，先让循迹模块记录故障，再清理其独立控制器。
         if (tracking_requested)
@@ -229,6 +261,14 @@ extern "C" void control_task(void const * argument)
       }
     }
 
+    // 模块执行后才产生的故障，也在本周期终止自动任务，不能靠切回手动绕过。
+    if (automatic_selected && !down &&
+        (fold_mode_faulted() || tracking::read_telemetry().fault != tracking::Fault::None)) {
+      mission_controller.abort(mission::Fault::ControlFault);
+      run_disable_mode();
+      control_mode = ControlMode::DISABLED;
+    }
+    mission_status = mission_controller.status();
     send_motor_commands();
 
     osDelay(1);

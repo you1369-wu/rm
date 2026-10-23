@@ -17,13 +17,15 @@
 ## 模式和故障
 
 - 右下：三电机零力矩，保留原折叠开机标定，同时解锁/确认循迹故障。
-- 右中：无程序循迹请求时执行原折叠逻辑；不依赖ID3或IMU在线。
+- 左下且右中/右上：执行自动任务，原折叠模式运行20秒后切换循迹；详见[自动任务说明](mission.md)。
+- 右中且左中/左上：无程序循迹请求时执行原折叠逻辑；不依赖ID3或IMU在线。
 - 双上：进入循迹；仍需先经过在线右下档，随后按原流程等待IMU、调平、靠近轨迹首点和跟踪。
-- `gimbal_tracking_request_start()` 可在非右下时请求循迹，优先于右中折叠；`stop()` 锁存失能，须回右下才可重启。实现保留在公共控制任务，声明在 `tracking_request.h`。
+- `gimbal_tracking_request_start()` 可在手动且非右下时请求循迹，优先于右中折叠；自动期间不接受/排队该请求。`stop()` 对两种控制来源均有效，锁存失能后须回右下才可重启。实现保留在公共控制任务，声明在 `tracking_request.h`。
 - 任一模式的故障都阻止进入运动模式，切换到另一模式不能绕过故障；右下同时确认两边故障。
 - 模式退出清理对应控制器历史。公共清零不额外发送CAN，周期末统一发送；不保证切换时插入一个独立的零力矩CAN周期。
 
 观察 `control_mode` 判断顶层模式：DISABLED=0、FOLD=1、TRACKING=2。
+`control_source` 区分手动/自动，`mission_status` 观察自动阶段、故障和20秒计时。
 循迹内部状态和原因仍看 `debug_tracking_state`、`debug_tracking_fault`；折叠仍看 `fold_stage`、`fold_fault`。
 为保留循迹调试命名，`debug_motor_a_*` 在此仍指循迹A（ID1，即 main 的 motor_b），不是 main 的折叠 motor_a。
 

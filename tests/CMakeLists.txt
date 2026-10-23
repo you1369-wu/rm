@@ -34,6 +34,7 @@ add_test(NAME imu_support_behavior COMMAND imu_support_test)
 set_tests_properties(imu_support_behavior PROPERTIES TIMEOUT 30)
 
 add_executable(mode_integration_test yuntai_pid_integration_test.cpp
+  ../applications/mission/mission.cpp
   ../applications/data_interfaces/can_task.cpp ../sp_middleware/tools/pid/pid.cpp
   ../sp_middleware/tools/math_tools/math_tools.cpp ../sp_middleware/motor/rm_motor/rm_motor.cpp)
 target_include_directories(mode_integration_test PRIVATE fakes ../applications ../sp_middleware)
@@ -48,3 +49,13 @@ set_tests_properties(mode_integration_behavior PROPERTIES TIMEOUT 30)
 
 add_executable(gravity_compensation_test gravity_compensation_test.cpp)
 add_test(NAME gravity_compensation_behavior COMMAND gravity_compensation_test)
+
+add_executable(mission_test mission_test.cpp ../applications/mission/mission.cpp)
+target_include_directories(mission_test PRIVATE ../applications)
+if(MSVC)
+  target_compile_options(mission_test PRIVATE /UNDEBUG)
+else()
+  target_compile_options(mission_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+endif()
+add_test(NAME mission_behavior COMMAND mission_test)
+set_tests_properties(mission_behavior PROPERTIES TIMEOUT 30)
