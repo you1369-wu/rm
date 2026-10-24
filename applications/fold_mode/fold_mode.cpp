@@ -21,7 +21,7 @@ float motor_a_gravity_horizontal_angle_rad = NAN;
 float motor_a_gravity_compensation_torque_nm = 0.0f;
 constexpr float kMotorAMaxGivenTorqueNm = 0.45f;
 
-uint16_t min_distance_cm = 120U;            // 折叠触发阈值，单位 cm。
+uint16_t min_distance_cm = 150U;            // 折叠触发阈值，单位 cm。
 uint16_t fold_distance_hysteresis_cm = 5U;  // 重新待命阈值 = 触发阈值 + 回差。
 
 // 从上电时人工放置的机械最大端起，沿电机角度坐标测得的有符号偏移，单位 rad。
@@ -33,10 +33,10 @@ float yuntai_folded_offset_rad = 0.0f;       // 折叠 = 机械最大端 。
 // 每次上电在遥控器下档采集一次参考角后，由偏移量计算本次运行的绝对角度。
 float yuntai_unfolded_angle_rad = NAN;
 float yuntai_folded_angle_rad = NAN;
-float yuntai_min_angle_rad = NAN;         // 反馈数值下限，本次对应机械最大端，单位 rad。
-float yuntai_max_angle_rad = NAN;         // 反馈数值上限，本次对应机械最小端，单位 rad。
-uint32_t fold_motion_timeout_ms = 5000U;  //折叠或复位超时保护（超过5s没到位则异常退出）
-uint32_t fold_hold_duration_ms = 3000U;   //保持折叠状态时间
+float yuntai_min_angle_rad = NAN;          // 反馈数值下限，本次对应机械最大端，单位 rad。
+float yuntai_max_angle_rad = NAN;          // 反馈数值上限，本次对应机械最小端，单位 rad。
+uint32_t fold_motion_timeout_ms = 10000U;  //折叠或复位超时保护（超过5s没到位则异常退出）
+uint32_t fold_hold_duration_ms = 3000U;    //保持折叠状态时间
 
 enum class FoldStage
 {

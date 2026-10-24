@@ -72,25 +72,25 @@ count, last sample timestamp, and an `active` flag. All state has a single write
 
 ## Plot
 
-The existing USART1 plot_task sends 18 channels every 10 ms:
-The current view shows both axes tracking their target trajectories:
+The existing USART1 plot_task sends 7 channels at `tracking_config::kPlotPeriodMs`:
 
 | Channel | Value |
 | --- | --- |
-| 1 / 2 | Target / encoder-measured yaw, rad |
-| 3 / 4 | Target / IMU-measured relative pitch, rad |
-| 5 / 6 | `pitch_ratio` / `yaw_ratio`, both in [0,1] |
-| 7 / 8 | Tip encoder position / pitch tracking error, rad |
-| 9 / 10 / 11 | Yaw / arm / tip limited torque, N*m |
-| 12 / 13 | Yaw / pitch RMS position error, rad |
-| 14 / 15 / 16 | Tracking state / fault / calibration flag |
-| 17 / 18 | Trajectory phase, ms / three-axis saturation mask |
+| 1 | `yaw_ratio`, in [0,1] |
+| 2 | `pitch_ratio`, in [0,1] |
+| 3 | Target yaw, rad |
+| 4 | Encoder-measured relative yaw, rad |
+| 5 | Target small-pitch angle, rad |
+| 6 | IMU-measured relative pitch, rad |
+| 7 | `distance`, cm; 65535 means no valid distance |
 
 The yaw tracking curve uses encoder feedback, while yaw scoring uses the
-calibrated IMU-relative yaw described above. CH5/CH6 are the organizer-defined
+calibrated IMU-relative yaw described above. CH1/CH2 are the organizer-defined
 filtered ratios, not final points out of 40.
-The existing binary Plotter protocol is unchanged: `AA BB 48` then 18 float32
-values. This is not text.
+The binary Plotter framing is unchanged, with the new payload length:
+`AA BB 1C` then 7 float32 values. This is not text. Configure the receiving plot
+for 7 channels instead of the previous 18; distance has a different scale from
+angles and ratios.
 
 The ratio is an exponential moving average, not the final score or the full-run
 hit-count fraction. The organizers average the displayed ratios over their test

@@ -153,6 +153,11 @@ void flow_tests(Scheduler &s) {
   t=read_telemetry(); assert(t.samples>1300&&t.rms_yaw<.02f&&t.rms_pitch<.02f);
   assert(t.run_started_ms == run_started); // Phase wrap must not restart score accumulation.
   assert(t.peak_error_yaw>=t.rms_yaw); assert(near(t.arm_hold,2.3f));
+  assert(near(t.target_tip,t.target_pitch+kArmDirection*(t.arm_at_origin-r.f.angle_b)));
+  assert(near(t.tip_position,kTipDirection*(r.f.angle_c-t.tip_origin)));
+  r.f.angle_b+=.02f/kArmDirection;
+  r.call(); t=read_telemetry();
+  assert(t.state==State::Running&&near(t.target_tip,t.target_pitch-.02f));
   r.expect(Fault::RemoteLost,r.call(true,false,false));
   zero(r.call()); assert(read_telemetry().fault==Fault::RemoteLost); // latched
   r.start(); assert(!read_telemetry().calibrated); // restart recalibrates, no stale origin

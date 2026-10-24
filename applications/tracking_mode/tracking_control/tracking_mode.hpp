@@ -18,6 +18,7 @@ struct Feedback {
 struct Telemetry {
   float target_yaw=0,actual_yaw=0,target_pitch=0,actual_pitch=0;
   float error_yaw=0,error_pitch=0,arm_error=0,tip_position=0;
+  float target_tip=0; // Read-only tip joint target, rad relative to tip_origin, matching tip_position.
   float torque_yaw=0,torque_arm=0,torque_pitch=0;
   float rms_yaw=0,rms_pitch=0,peak_error_yaw=0,peak_error_pitch=0;
   float speed_command_yaw=0,speed_yaw=0,speed_command_pitch=0,speed_pitch=0;

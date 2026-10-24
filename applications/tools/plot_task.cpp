@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include "cmsis_os.h"
 #include "control_task.hpp"
 #include "io/plotter/plotter.hpp"
@@ -9,6 +11,7 @@
 extern sp::RM_Motor motor_b;
 extern GimbalData motor_b_data;
 extern sp::PID motor_b_pid_speed;
+extern volatile uint16_t distance;
 
 sp::Plotter plotter(&huart1, false);
 
@@ -20,16 +23,13 @@ extern "C" void plot_task(void const * argument)
 	while (1) {
 		const auto t = tracking::read_telemetry();
 		const auto score = tracking_score::read_score();
-		// 恢复两轴轨迹跟踪：CH1/2=yaw目标/实际角，CH3/4=pitch目标/实际角(rad)。
-		// CH5=pitch_ratio，CH6=yaw_ratio：赛事评分比例，范围[0,1]。
-		// 其余通道恢复为tip位置、pitch误差、三轴力矩、RMS及状态信息。
+		const float distance_cm = static_cast<float>(distance);
+		// CH1/2=yaw_ratio/pitch_ratio，CH3/4=yaw目标/编码器反馈角(rad)。
+		// CH5/6=小pitch目标/IMU反馈角(rad)，CH7=distance(cm)，65535表示无效。
 		plotter.plot(
-			t.target_yaw, t.actual_yaw, t.target_pitch, t.actual_pitch,
-			score.pitch_ratio, score.yaw_ratio,
-			t.tip_position, t.error_pitch, t.torque_yaw, t.torque_arm, t.torque_pitch,
-			t.rms_yaw, t.rms_pitch, static_cast<float>(t.state), static_cast<float>(t.fault),
-			static_cast<float>(t.calibrated), static_cast<float>(t.phase_ms),
-			static_cast<float>(t.saturation_mask));
+			score.yaw_ratio, score.pitch_ratio,
+			t.target_yaw, t.actual_yaw, t.target_tip, t.tip_position,
+			distance_cm);
 		osDelay(tracking_config::kPlotPeriodMs);
 	}
 }

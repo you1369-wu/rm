@@ -338,11 +338,16 @@ Command update(
       kLevelMaxSpeed);
     t.target_pitch = imu_finite ? f.pitch : 0;
     t.actual_pitch = t.target_pitch;
+    t.target_tip = 0;  // Entry encoder position is held while waiting for the IMU.
   }
   else {
     co =
       tip_control.step(pr, f.pitch, f.pitch_rate, dt, t.state == State::Level ? kLevelMaxSpeed : 0);
     t.target_pitch = pr.position - t.pitch_origin;
+    // Diagnostic target in the encoder joint frame; leave the IMU control loop unchanged.
+    t.target_tip = t.calibrated
+      ? t.target_pitch + kArmDirection * (t.arm_at_origin - f.angle_b)
+      : t.tip_position + pr.position - f.pitch;
   }
   t.target_yaw = yr.position;
   t.error_yaw = ao.error;
